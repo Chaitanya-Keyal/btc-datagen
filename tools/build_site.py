@@ -393,6 +393,7 @@ def build_scenario(scenario, wallets, seeds) -> tuple:
         "attack": scenario.attack,
         "expected": scenario.expected,
         "expected_screen": scenario.expected_screen,
+        "outcome": scenario.outcome,
     }
     return entry, written
 

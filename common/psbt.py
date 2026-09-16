@@ -2,8 +2,8 @@
 
 Synthetic UTXOs only. Each input is funded by a **real, fully-formed fake
 funding transaction** that we build first and then reference by its actual txid,
-because legacy (non-segwit) inputs carry `non_witness_utxo` — the whole previous
-transaction — and both embit and SeedSigner check that it hashes to the input's
+because legacy (non-segwit) inputs carry `non_witness_utxo`, the whole previous
+transaction, and both embit and SeedSigner check that it hashes to the input's
 prevout txid. Segwit inputs only need `witness_utxo`, which keeps large PSBTs
 manageable (a 100-input legacy PSBT would be enormous, which is realistic but
 not useful).
@@ -16,7 +16,7 @@ Two constraints worth knowing:
   * Inputs are homogeneous. SeedSigner raises "Mixed inputs in the transaction"
     if input policies differ within one PSBT.
   * Multisig uses sortedmulti (keys sorted lexicographically per input), which
-    must match the descriptor's `sortedmulti` — see common/descriptor.py.
+    must match the descriptor's `sortedmulti`, see common/descriptor.py.
 """
 import hashlib
 
@@ -140,7 +140,7 @@ class _ScriptContext:
         if self.internal_key is not None:
             scope.taproot_internal_key = self.internal_key
             for pk, dp in self.derivations.items():
-                # (leaf_hashes, derivation) — empty leaf hashes for key-path spends
+                # (leaf_hashes, derivation), empty leaf hashes for key-path spends
                 scope.taproot_bip32_derivations[pk] = ([], dp)
         else:
             for pk, dp in self.derivations.items():
@@ -151,8 +151,8 @@ def _funding_tx(ctx: _ScriptContext, value: int, nonce: int) -> Transaction:
     """A plausible previous transaction paying `value` to ctx at vout 0.
 
     Deterministic and self-consistent: its txid is computed from its own bytes,
-    so `non_witness_utxo` validates. Its own input is an arbitrary fake outpoint
-    — nothing walks further back than one level.
+    so `non_witness_utxo` validates. Its own input is an arbitrary fake outpoint;
+    nothing walks further back than one level.
     """
     prev_txid = hashlib.sha256(b"btc-datagen-funding" + nonce.to_bytes(4, "big")).digest()
     return Transaction(
@@ -221,7 +221,7 @@ def build_psbt(signers: list, script_type: str, num_inputs: int = 3,
             vout.append(TransactionOutput(change_value, ctx.script_pubkey))
             output_ctx.append(ctx)
         elif kind == "self_transfer":
-            # Own wallet, receive branch — a self-send, distinct from change.
+            # Own wallet, receive branch, a self-send, distinct from change.
             ctx = _ScriptContext(signers, threshold, script_type, RECEIVE_BRANCH, 500)
             value = per_payee + (remainder if len(vout) == 0 else 0)
             vout.append(TransactionOutput(value, ctx.script_pubkey))
@@ -280,8 +280,15 @@ def summarize(psbt: PSBT, network: str = "main") -> dict:
     for i, out in enumerate(psbt.outputs):
         value = psbt.tx.vout[i].value
         output_total += value
+        spk = psbt.tx.vout[i].script_pubkey
+        try:
+            address = spk.address(net)
+        except Exception:
+            # A script embit cannot turn into an address (e.g. bare p2pk, used by
+            # the "unsupported script type" test scenario). Show the raw script.
+            address = spk.data.hex()
         outputs.append({
-            "address": psbt.tx.vout[i].script_pubkey.address(net),
+            "address": address,
             "value": value,
             "kind": _output_kind(out),
         })
@@ -296,7 +303,7 @@ def summarize(psbt: PSBT, network: str = "main") -> dict:
 
 def address_at(signers: list, script_type: str, branch: int, index: int,
                network: str = "main", threshold: int = None) -> str:
-    """The wallet's address at branch/index — what SeedSigner's Verify Address
+    """The wallet's address at branch/index, what SeedSigner's Verify Address
     flow should confirm belongs to this wallet."""
     from embit.networks import NETWORKS
     ctx = _ScriptContext(signers, threshold, script_type, branch, index)

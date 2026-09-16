@@ -385,31 +385,45 @@ input[type="range"] { width: 100%; height: 40px; accent-color: var(--accent); }
 .chooser button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 /* --- picker sheet -------------------------------------------------------- */
+/* A full-screen page, not a bottom sheet. On mobile the old sheet capped at 88vh
+   and gave the scenario list its own tiny scroll window, made worse once the PR
+   toggles and filters ate into that height. Now the whole thing is one page that
+   scrolls with the document, so the list has the full viewport to grow into. */
 .sheet {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(0,0,0,.45);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
+  background: var(--bg);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .sheet-card {
   background: var(--bg);
   width: 100%;
   max-width: 40rem;
-  max-height: 88vh;
-  border-radius: var(--radius) var(--radius) 0 0;
-  display: flex;
-  flex-direction: column;
+  min-height: 100%;
+  margin: 0 auto;
   padding: var(--pad);
   padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
 }
-.sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+/* Sticky so the title and Close stay reachable however far the list scrolls. */
+.sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding: 8px 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  z-index: 1;
+}
 .sheet-head h2 { font-size: 1.05rem; }
 .filters { display: grid; gap: 10px; margin-bottom: 12px; }
 .filters .control label { margin-bottom: 4px; }
-.sheet-list { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* No nested scroll: the list flows in the page and scrolls with it. */
+.sheet-list { }
 
 .scenario-item {
   display: block;

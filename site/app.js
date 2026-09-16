@@ -1072,6 +1072,19 @@ function renderFlow() {
 
 /* The what-to-load / what-should-happen note for a PR test scenario. Empty and
    hidden for every ordinary demo transaction. */
+/* How the fixed device should react, phrased by outcome: most abort to a warning
+   screen, but some parse with no warning and only classify the output. */
+function outcomePhrase(s) {
+  const scr = s.expected_screen;
+  switch (s.outcome) {
+    case 'error': return `should abort to the <b>${scr}</b>`;
+    case 'spend':
+    case 'change':
+      return `should parse with no warning, and show the output <b>${scr.toLowerCase()}</b>`;
+    default: return `should route to “<b>${scr}</b>”`;
+  }
+}
+
 function renderTestBanner() {
   const banner = $('test-banner');
   const s = state.scenario;
@@ -1083,7 +1096,7 @@ function renderTestBanner() {
     <strong>Test transaction (${tag}), not a demo</strong>
     <p>${s.blurb}</p>
     <p class="test-banner-do">Load <b>${seed}</b>'s seed below. On a device with the
-      fix, this should route to “<b>${s.expected_screen}</b>”.</p>`;
+      fix, this ${outcomePhrase(s)}.</p>`;
   banner.hidden = false;
 }
 
@@ -1953,6 +1966,9 @@ function openPicker() {
   renderFilters();
   renderScenarioList();
   $('picker').hidden = false;
+  // It scrolls as a full page now, so start it at the top rather than wherever a
+  // previous visit left it.
+  $('picker').scrollTop = 0;
 }
 function closePicker() { $('picker').hidden = true; }
 
