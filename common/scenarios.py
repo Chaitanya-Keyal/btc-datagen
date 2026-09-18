@@ -74,7 +74,7 @@ class Scenario:
     # `load_seed` overrides which seed the "Load the seed" step presents (the
     # point of the wrong-seed case); `expected*` describe what the device should
     # do so the sample is useful to run on hardware.
-    pr: str = None                     # "1013" | "1032" | "1044" | "1040"
+    pr: str = None                     # "1013" | "1032" | "1044" | "1040" | "1041"
     attack: str = None
     load_seed: str = None
     expected: str = None
@@ -176,6 +176,15 @@ TEST_PR_GROUPS = [
         "blurb": ("A key's derivation entry and the global xpub that derives it both name "
                   "a fingerprint. When they disagree the psbt contradicts itself and is "
                   "refused; an all-zero fingerprint is a missing value, not a second answer."),
+    },
+    {
+        "pr": "1041",
+        "label": "PR #1041: outputs exceed inputs",
+        "url": "https://github.com/seedsigner/seedsigner/pull/1041",
+        "blurb": ("A transaction cannot pay out more than it takes in. embit computes "
+                  "the fee as inputs minus outputs and does not check the sign, so "
+                  "without this the device reviews the transaction quoting a negative "
+                  "fee."),
     },
 ]
 
@@ -482,6 +491,36 @@ def _make_pr_test(pr, d):
     )
 
 
+# --- negative fee ------------------------------------------------------------
+#
+# Not a forgery: every key claim in this psbt is honest and the change output is
+# genuinely ours. Only the arithmetic is impossible, the outputs move more than
+# the inputs hold. The check is a single comparison on the parsed fee, so it is
+# script-type agnostic and one family is enough to exercise it.
+
+_NEGATIVE_FEE_SCRIPT_TYPE = "P2WPKH"
+
+
+def _make_negative_fee() -> Scenario:
+    info = script_types.get(_NEGATIVE_FEE_SCRIPT_TYPE)
+    return Scenario(
+        id="test-1041-negative-fee",
+        wallet=WALLET_FOR_SCRIPT_TYPE[_NEGATIVE_FEE_SCRIPT_TYPE],
+        script_type=_NEGATIVE_FEE_SCRIPT_TYPE,
+        num_inputs=DEFAULT_NUM_INPUTS, output_shape="change", network="main",
+        title=f"\u26a0 Outputs exceed inputs ({info.label})",
+        blurb=("An ordinary change transaction with its change output inflated past "
+               "what the inputs hold, so the fee comes out negative. Nothing about "
+               "the keys is false; the transaction is simply impossible and no "
+               "network would relay it."),
+        is_default=False,
+        tags=["test", "Negative fee", info.label],
+        pr="1041", attack="negative_fee", load_seed=TEST_VICTIM_SEED,
+        expected="Device should reject it as a malformed transaction.",
+        expected_screen="Transaction Problem", outcome="refuse",
+    )
+
+
 def test_scenarios() -> list:
     """Adversarial / malformed transactions for exercising the hardening PRs on device."""
     out = []
@@ -497,4 +536,6 @@ def test_scenarios() -> list:
     out.extend(_make_pr_test("1044", d) for d in _PR1044_DEFS)
     # PR #1040: the two fingerprint records for a key must agree.
     out.extend(_make_pr_test("1040", d) for d in _PR1040_DEFS)
+    # Outputs that exceed the inputs: one case, the check does not vary by type.
+    out.append(_make_negative_fee())
     return out
