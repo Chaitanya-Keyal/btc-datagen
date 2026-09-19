@@ -47,6 +47,7 @@ from urtypes.crypto import PSBT as URPSBT
 
 from common import bbqr, scenarios as scenario_defs, script_types
 from common.attack_psbt import build_test_psbt
+from common.op_return_psbt import build_op_return_psbt
 from common.fixtures import load_seeds, load_wallets, wallet_cosigners
 from common.psbt import build_psbt, summarize
 from common.qr import qr_matrix, qr_matrix_bytes
@@ -302,7 +303,14 @@ def build_scenario(scenario, wallets, seeds) -> tuple:
     # Adversarial / malformed test scenarios forge the PSBT (or, for the
     # wrong-seed case, ship an honest one the decoy seed cannot sign). The
     # builders live in common/attack_psbt, one per `attack` kind.
-    if scenario.attack:
+    #
+    # Issue #963's OP_RETURN cases forge nothing: they are honest transactions
+    # that only vary how the data carrier is encoded, built by
+    # common/op_return_psbt.
+    if scenario.pr == "1042":
+        psbt = build_op_return_psbt(scenario.attack, signers, scenario.script_type,
+                                    scenario.num_inputs, threshold=wallet["threshold"])
+    elif scenario.attack:
         psbt = build_test_psbt(scenario.attack, signers, scenario.script_type,
                                wallet["network"], scenario.num_inputs,
                                threshold=wallet["threshold"])
