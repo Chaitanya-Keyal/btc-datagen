@@ -652,7 +652,161 @@ def _d5_diff_quorum_no_xpubs(signers, network, num_inputs, threshold):
     return psbt
 
 
-_D5_BUILDERS = {
+# --- PR #1044: hold every claim of ours on a multisig output to its script -----
+#
+# #1032 verified only the FIRST entry claiming our seed on a multisig output.
+# A decoy (a key our seed really derives, but which the committed script has no
+# use for) listed after our genuine entry was caught only by the surplus count,
+# and one substituted for another cosigner's entry (keeping the count at n) was
+# not caught at all. #1044 keeps every verified entry and holds each one to the
+# script, so a decoy in any position is PSBTOutputOwnershipContradictionError.
+# The decoy-first and stranger-padding cases are unchanged from #1032 and reuse
+# its builders; only the two builders below are new.
+
+
+def _decoy_entry(victim):
+    """A key this seed owns (its first receive key) that is not in the change
+    script, annotated truthfully: our fingerprint, a path we really derive."""
+    return (_victim_key(victim, RECEIVE_BRANCH, 0),
+            DerivationPath(bytes.fromhex(victim.fingerprint),
+                           _forged_path(victim, RECEIVE_BRANCH, 0)))
+
+
+def _pr1044_decoy_last(signers, network, num_inputs, threshold):
+    """A genuine multisig change output plus a decoy entry, listed LAST.
+
+    Our real entry is verified first and its key is in the script; the decoy
+    behind it is also ours but not in the script. #1032 stopped at the first
+    verified entry and only the surplus count (four entries, three keys) objected,
+    a plain "Transaction Problem". #1044 holds the decoy to the script too, and
+    refuses it as a contradiction.
+    """
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    out = psbt.outputs[_change_output_index(psbt)]
+    decoy_key, decoy = _decoy_entry(signers[0])
+    out.bip32_derivations[decoy_key] = decoy
+    return psbt
+
+
+def _pr1044_decoy_substituted(signers, network, num_inputs, threshold):
+    """A genuine multisig change output with a decoy entry in place of another
+    cosigner's, so the output still lists exactly n entries.
+
+    Our real entry verifies and is in the script; the entry count matches the
+    script's key count, so the surplus check has nothing to say. Only holding
+    every verified entry to the script exposes the decoy. On a #1032 build this
+    output parses silently as change; on #1044 it is a contradiction.
+    """
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    out = psbt.outputs[_change_output_index(psbt)]
+    victim_fp = bytes.fromhex(signers[0].fingerprint)
+    for pk, dp in list(out.bip32_derivations.items()):
+        if dp.fingerprint != victim_fp:
+            del out.bip32_derivations[pk]
+            break
+    decoy_key, decoy = _decoy_entry(signers[0])
+    out.bip32_derivations[decoy_key] = decoy
+    return psbt
+
+
+# --- PR #1040: reject a psbt whose fingerprint records disagree --------------
+#
+# A psbt makes two claims about where a key comes from: the fingerprint on the
+# key's own derivation entry, and the fingerprint on the global xpub that derives
+# that key. Both are the coordinator's claims about the same master key, so they
+# should agree. #1040 walks every input and output entry, finds the global xpub
+# that derives its key, and raises PSBTInconsistentFingerprintError when the two
+# fingerprints differ. All-zero fingerprints on either side are skipped (that is
+# how a coordinator writes a fingerprint it does not know), and the check runs
+# LAST so a more serious finding about our own keys is still the one reported.
+#
+# build_psbt writes no global xpubs, so every builder here adds the wallet's
+# (the check has nothing to compare without them; one builder leaves them out
+# on purpose to show exactly that).
+
+_MISSING_FINGERPRINT = b"\x00\x00\x00\x00"
+
+
+def _relabel_first_cosigner(scope, victim_fp: bytes, fingerprint: bytes):
+    """Rewrite the fingerprint on the first entry in `scope` that is not this
+    seed's, leaving its key and derivation path alone."""
+    for pk, dp in scope.bip32_derivations.items():
+        if dp.fingerprint != victim_fp:
+            scope.bip32_derivations[pk] = DerivationPath(fingerprint, dp.derivation)
+            return
+    raise ValueError("scope has no cosigner entry besides this seed's")
+
+
+def _pr1040_cosigner_mismatch(signers, network, num_inputs, threshold):
+    """Honest multisig change, global xpubs present, but one cosigner's entry on
+    the change output carries a fingerprint that disagrees with that cosigner's
+    xpub. The key and path are right, so every ownership check passes, and only
+    the consistency check has anything to report."""
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    _add_wallet_xpubs(psbt, signers)
+    out = psbt.outputs[_change_output_index(psbt)]
+    _relabel_first_cosigner(out, bytes.fromhex(signers[0].fingerprint),
+                            _attacker_fingerprint(network))
+    return psbt
+
+
+def _pr1040_cosigner_mismatch_input(signers, network, num_inputs, threshold):
+    """The same mislabel on an input entry instead of the change output; the
+    check walks both."""
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    _add_wallet_xpubs(psbt, signers)
+    _relabel_first_cosigner(psbt.inputs[0], bytes.fromhex(signers[0].fingerprint),
+                            _attacker_fingerprint(network))
+    return psbt
+
+
+def _pr1040_cosigner_missing(signers, network, num_inputs, threshold):
+    """The same cosigner entry, but with the all-zero fingerprint a coordinator
+    writes for a key it cannot identify. That is a missing value, not a second
+    answer, so the check skips it and the output is still counted as change."""
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    _add_wallet_xpubs(psbt, signers)
+    out = psbt.outputs[_change_output_index(psbt)]
+    _relabel_first_cosigner(out, bytes.fromhex(signers[0].fingerprint),
+                            _MISSING_FINGERPRINT)
+    return psbt
+
+
+def _pr1040_cosigner_mismatch_no_xpubs(signers, network, num_inputs, threshold):
+    """The mislabeled cosigner entry with NO global xpubs. There is no second
+    record to compare against, so the check cannot run and the output is counted
+    as change: the limitation, not a bug."""
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    out = psbt.outputs[_change_output_index(psbt)]
+    _relabel_first_cosigner(out, bytes.fromhex(signers[0].fingerprint),
+                            _attacker_fingerprint(network))
+    return psbt
+
+
+def _pr1040_singlesig_xpub_mismatch(signers, network, num_inputs):
+    """Honest single-sig change with the wallet's one global xpub added, then the
+    xpub's fingerprint mislabeled. Every key entry is correct (they claim our
+    seed and derive from it), so only the xpub record disagrees."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    _add_wallet_xpubs(psbt, signers)
+    xpub, dp = next(iter(psbt.xpubs.items()))
+    psbt.xpubs[xpub] = DerivationPath(_attacker_fingerprint(network), dp.derivation)
+    return psbt
+
+
+def _pr1040_mismatch_beneath_contradiction(signers, network, num_inputs, threshold):
+    """The #1032 multisig fake change (the change output pays an attacker's 2-of-3
+    while claiming our key) with a cosigner mislabel on an input as well. The
+    fingerprint check runs last, so the device must report the contradiction,
+    not the mismatch."""
+    psbt = _d5_contradiction_multisig(signers, network, num_inputs, threshold)
+    _add_wallet_xpubs(psbt, signers)
+    _relabel_first_cosigner(psbt.inputs[0], bytes.fromhex(signers[0].fingerprint),
+                            _attacker_fingerprint(network))
+    return psbt
+
+
+_TEST_BUILDERS = {
     "contradiction_singlesig": _d5_contradiction_singlesig,
     "contradiction_pays_us_claims_other": _d5_contradiction_pays_us_claims_other,
     "contradiction_taproot_claims_other": _d5_contradiction_taproot_claims_other,
@@ -673,22 +827,40 @@ _D5_BUILDERS = {
     "diff_quorum_xpubs": _d5_diff_quorum_xpubs,
     "diff_quorum_outsider_xpub": _d5_diff_quorum_outsider_xpub,
     "diff_quorum_no_xpubs": _d5_diff_quorum_no_xpubs,
+    "decoy_last": _pr1044_decoy_last,
+    "decoy_substituted": _pr1044_decoy_substituted,
+    "cosigner_mismatch": _pr1040_cosigner_mismatch,
+    "cosigner_mismatch_input": _pr1040_cosigner_mismatch_input,
+    "cosigner_missing": _pr1040_cosigner_missing,
+    "cosigner_mismatch_no_xpubs": _pr1040_cosigner_mismatch_no_xpubs,
+    "singlesig_xpub_mismatch": _pr1040_singlesig_xpub_mismatch,
+    "mismatch_beneath_contradiction": _pr1040_mismatch_beneath_contradiction,
 }
 
 # Kinds that need the wallet threshold passed through (multisig builders).
-_D5_MULTISIG_KINDS = {"contradiction_multisig", "contradiction_multisig_unclaimed",
-                      "contradiction_multisig_decoy_first", "contradiction_multisig_bad_script",
-                      "surplus_multisig", "multisig_external_spend",
-                      "multisig_change_no_paths", "multisig_change_no_script",
-                      "diff_quorum_xpubs", "diff_quorum_outsider_xpub",
-                      "diff_quorum_no_xpubs"}
+_MULTISIG_KINDS = {"contradiction_multisig", "contradiction_multisig_unclaimed",
+                   "contradiction_multisig_decoy_first", "contradiction_multisig_bad_script",
+                   "surplus_multisig", "multisig_external_spend",
+                   "multisig_change_no_paths", "multisig_change_no_script",
+                   "diff_quorum_xpubs", "diff_quorum_outsider_xpub",
+                   "diff_quorum_no_xpubs",
+                   "decoy_last", "decoy_substituted",
+                   "cosigner_mismatch", "cosigner_mismatch_input", "cosigner_missing",
+                   "cosigner_mismatch_no_xpubs", "mismatch_beneath_contradiction"}
 
 
-def build_d5_psbt(kind: str, signers: list, script_type: str,
-                  network: str = "main", num_inputs: int = 3, threshold: int = None):
-    builder = _D5_BUILDERS.get(kind)
+def build_test_psbt(kind: str, signers: list, script_type: str,
+                    network: str = "main", num_inputs: int = 3, threshold: int = None):
+    """The PSBT for one test scenario, by its `attack` kind. Covers every PR:
+    #1013's two forgeries and its honest wrong-seed psbt, then the per-output
+    builders for #1032, #1044, and #1040."""
+    if kind in ("fake_change", "bad_input"):
+        return build_attack_psbt(kind, signers, script_type, network, num_inputs, threshold)
+    if kind == "wrong_seed":
+        return build_psbt(signers, script_type, num_inputs, "change", threshold=threshold)
+    builder = _TEST_BUILDERS.get(kind)
     if builder is None:
-        raise ValueError(f"unknown D5 kind: {kind!r}")
-    if kind in _D5_MULTISIG_KINDS:
+        raise ValueError(f"unknown test kind: {kind!r}")
+    if kind in _MULTISIG_KINDS:
         return builder(signers, network, num_inputs, threshold)
     return builder(signers, network, num_inputs)

@@ -46,7 +46,7 @@ from embit.psbt import SIGHASH
 from urtypes.crypto import PSBT as URPSBT
 
 from common import bbqr, scenarios as scenario_defs, script_types
-from common.attack_psbt import build_attack_psbt, build_d5_psbt
+from common.attack_psbt import build_test_psbt
 from common.fixtures import load_seeds, load_wallets, wallet_cosigners
 from common.psbt import build_psbt, summarize
 from common.qr import qr_matrix, qr_matrix_bytes
@@ -299,19 +299,13 @@ def build_scenario(scenario, wallets, seeds) -> tuple:
     wallet = wallets[scenario.wallet]
     signers = wallet_cosigners(wallet, seeds)
 
-    # Adversarial / malformed test scenarios forge the PSBT. PR #1013's
-    # "fake_change"/"bad_input" poison a derivation entry ("wrong_seed" ships an
-    # honest PSBT the decoy seed cannot sign); PR #1032 / D5 forges the change
-    # output so its script contradicts its ownership claims, or its derivation
-    # bookkeeping is malformed.
-    if scenario.pr == "1032":
-        psbt = build_d5_psbt(scenario.attack, signers, scenario.script_type,
-                             wallet["network"], scenario.num_inputs,
-                             threshold=wallet["threshold"])
-    elif scenario.attack in ("fake_change", "bad_input"):
-        psbt = build_attack_psbt(scenario.attack, signers, scenario.script_type,
-                                 wallet["network"], scenario.num_inputs,
-                                 threshold=wallet["threshold"])
+    # Adversarial / malformed test scenarios forge the PSBT (or, for the
+    # wrong-seed case, ship an honest one the decoy seed cannot sign). The
+    # builders live in common/attack_psbt, one per `attack` kind.
+    if scenario.attack:
+        psbt = build_test_psbt(scenario.attack, signers, scenario.script_type,
+                               wallet["network"], scenario.num_inputs,
+                               threshold=wallet["threshold"])
     else:
         psbt = build_psbt(signers, scenario.script_type, scenario.num_inputs,
                           scenario.output_shape, threshold=wallet["threshold"])

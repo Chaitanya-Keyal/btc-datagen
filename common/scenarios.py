@@ -74,7 +74,7 @@ class Scenario:
     # `load_seed` overrides which seed the "Load the seed" step presents (the
     # point of the wrong-seed case); `expected*` describe what the device should
     # do so the sample is useful to run on hardware.
-    pr: str = None                     # "1013" | "1032"
+    pr: str = None                     # "1013" | "1032" | "1044" | "1040"
     attack: str = None
     load_seed: str = None
     expected: str = None
@@ -83,7 +83,8 @@ class Scenario:
     #   refuse  aborts to a warning screen (expected_screen names it)
     #   error   aborts to the generic error screen (unsupported input)
     #   spend   parses fine; the output is shown as a payment out, not change
-    #   change  parses fine; the output is shown as change (a documented limit)
+    #   change  parses fine; the output is shown as change (correctly, or as a
+    #           documented limit; expected_screen says which)
     outcome: str = None
 
 
@@ -160,6 +161,22 @@ TEST_PR_GROUPS = [
                   "seed matches what the output commits to. Contradictions and "
                   "malformed derivation bookkeeping are refused."),
     },
+    {
+        "pr": "1044",
+        "label": "PR #1044: every claim held to the script",
+        "url": "https://github.com/seedsigner/seedsigner/pull/1044",
+        "blurb": ("A multisig output may claim this seed more than once. Every claim is "
+                  "now held to the committed script, so a decoy key of ours is refused "
+                  "wherever the psbt lists it, not only when it is listed first."),
+    },
+    {
+        "pr": "1040",
+        "label": "PR #1040: fingerprint consistency",
+        "url": "https://github.com/seedsigner/seedsigner/pull/1040",
+        "blurb": ("A key's derivation entry and the global xpub that derives it both name "
+                  "a fingerprint. When they disagree the psbt contradicts itself and is "
+                  "refused; an all-zero fingerprint is a missing value, not a second answer."),
+    },
 ]
 
 # script_type -> (short family name, wallet fixture base name), for PR #1013.
@@ -227,63 +244,67 @@ def _make_test(attack, script_type, family):
     )
 
 
-# PR #1032: output ownership. Each entry pins the forgery builder
-# (common/attack_psbt.build_d5_psbt), the wallet it runs on, and the expected
-# outcome. Most refuse to a warning screen; some parse fine but classify the
-# output (spend, or change for one documented limitation). `screen` is the label
-# a tester looks for; `outcome` tells the banner how to phrase it.
-_D5_ATTACK_SCREEN = "Suspicious Transaction / Likely an Attack!"
-_D5_PROBLEM_SCREEN = "Transaction Problem"
-_D5_ERROR_SCREEN = "Generic error screen"
-_D5_SPEND_RESULT = "Shown as a payment, not change"
-_D5_CHANGE_RESULT = "Shown as change (a limitation)"
+# PR #1032, #1044, and #1040: one def list per PR. Each entry pins the forgery
+# builder (common/attack_psbt.build_test_psbt), the wallet it runs on, and the
+# expected outcome. Most refuse to a warning screen; some parse fine but classify
+# the output (spend, or change: correctly, or for a documented limitation).
+# `screen` is the label a tester looks for; `outcome` tells the banner how to
+# phrase it.
+_ATTACK_SCREEN = "Suspicious Transaction / Likely an Attack!"
+_PROBLEM_SCREEN = "Transaction Problem"
+_ERROR_SCREEN = "Generic error screen"
+_SPEND_RESULT = "Shown as a payment, not change"
+_CHANGE_RESULT = "Shown as change (a limitation)"
+_CHANGE_OK_RESULT = "Shown as change (correct)"
 
-_D5_REFUSE = "Device should refuse it as likely an attack."
-_D5_MALFORMED = "Device should reject it as a malformed transaction."
-_D5_ERROR = "Device should abort to the generic error screen."
-_D5_SPEND = "Device should show the output as a payment out, not change."
-_D5_CHANGE = "Without a descriptor the device shows it as change; load the descriptor to catch it."
+_REFUSE = "Device should refuse it as likely an attack."
+_MALFORMED = "Device should reject it as a malformed transaction."
+_ERROR = "Device should abort to the generic error screen."
+_SPEND = "Device should show the output as a payment out, not change."
+_CHANGE = "Without a descriptor the device shows it as change; load the descriptor to catch it."
+_CHANGE_OK = "Device should parse it and show the output as change."
+_CHANGE_NO_XPUBS = "With no global xpubs there is nothing to compare, so the device shows it as change."
 
 # Icon by outcome: a warning triangle where the device stops, an arrow where the
 # output leaves as a spend, an info mark where it is (mis)counted as change.
-_D5_ICON = {"refuse": "⚠", "error": "⚠", "spend": "→", "change": "ℹ"}
+_ICON = {"refuse": "⚠", "error": "⚠", "spend": "→", "change": "ℹ"}
 
-_D5_DEFS = [
+_PR1032_DEFS = [
     # --- refusals: ownership contradictions (attack warning) -----------------
     {"kind": "contradiction_singlesig", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "Fake change pays another key", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("It is labeled as change back to this seed, but the scriptPubKey pays a "
                "key you do not own, so the funds really leave.")},
     {"kind": "contradiction_pays_us_claims_other", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "Change claims a stranger's key", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("It really is your change and the script pays your key, but the derivation "
                "entry claims a stranger's fingerprint. Any wrong ownership claim is refused.")},
     {"kind": "contradiction_taproot_claims_other", "script_type": "P2TR", "family": "Taproot",
      "label": "Taproot change claims a stranger", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("The taproot version of the above: the output pays your internal key, but "
                "the entry claims a stranger's fingerprint.")},
     {"kind": "contradiction_multisig", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Fake change to a foreign multisig", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("It is labeled as change back to this seed, but it pays an attacker's "
                "2-of-3 that holds none of your keys, so the funds really leave.")},
     {"kind": "contradiction_multisig_unclaimed", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Change hidden behind relabeled fingerprints", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("It really is your own change output, but every derivation fingerprint is "
                "relabeled to a stranger's, hiding that it belongs to you.")},
     {"kind": "contradiction_multisig_decoy_first", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Decoy key listed first", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("A genuine multisig change output, plus a decoy entry, a key you own that "
                "is not in the script, listed first. The recorded key is not in the "
                "committed script.")},
     {"kind": "contradiction_multisig_bad_script", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Supplied script is not the committed one", "outcome": "refuse",
-     "screen": _D5_ATTACK_SCREEN, "expected": _D5_REFUSE,
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("Only the scriptPubKey is repointed at a stranger's 2-of-3; the supplied "
                "witness script and every entry are kept, so the script no longer hashes "
                "to what the output commits to.")},
@@ -291,69 +312,69 @@ _D5_DEFS = [
     # --- refusals: malformed derivation bookkeeping ("Transaction Problem") ---
     {"kind": "surplus_singlesig", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "Surplus derivation paths (single-key)", "outcome": "refuse",
-     "screen": _D5_PROBLEM_SCREEN, "expected": _D5_MALFORMED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("It is a valid change output back to this seed, but it lists two "
                "derivation paths for a single-key script.")},
     {"kind": "surplus_multisig", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Surplus derivation paths (multisig)", "outcome": "refuse",
-     "screen": _D5_PROBLEM_SCREEN, "expected": _D5_MALFORMED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("It is a valid 2-of-3 change output, but it lists four derivation paths "
                "for a script that has only three keys.")},
     {"kind": "surplus_taproot", "script_type": "P2TR", "family": "Taproot",
      "label": "Surplus internal keys (taproot)", "outcome": "refuse",
-     "screen": _D5_PROBLEM_SCREEN, "expected": _D5_MALFORMED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("It is a valid taproot change output, but it claims two internal keys "
                "where there can be only one.")},
     {"kind": "mixed_types", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "Mixed derivation path types", "outcome": "refuse",
-     "screen": _D5_PROBLEM_SCREEN, "expected": _D5_MALFORMED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("It is a valid change output, but its scope lists derivation paths in "
                "both the ecdsa and taproot maps, which no script type can use.")},
 
     # --- aborts to the generic error screen ----------------------------------
     {"kind": "unsupported_script_type", "script_type": "P2WPKH", "family": "bare p2pk",
      "label": "Unsupported script type", "outcome": "error",
-     "screen": _D5_ERROR_SCREEN, "expected": _D5_ERROR,
+     "screen": _ERROR_SCREEN, "expected": _ERROR,
      "blurb": ("The inputs and change use bare pay-to-pubkey, which the device does not "
                "support. It aborts rather than guess. No dedicated screen for this yet.")},
 
     # --- accepted, output correctly shown as a spend -------------------------
     {"kind": "multisig_external_spend", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Payment to another multisig", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("An honest payment to a different multisig, fully annotated with that "
                "wallet's own keys. None are yours, so it is a plain external spend.")},
     {"kind": "multisig_change_no_paths", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Change with no derivation paths", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("Your real multisig change, with the derivation entries omitted (BIP-174 "
                "allows it). With no path to derive, the device cannot see your key in "
                "the script, so it over-reports the output as leaving.")},
     {"kind": "multisig_change_no_script", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Change with no script", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("Your real multisig change, with the witness script omitted. With no "
                "script there is no m-of-n to match, so the output is shown as a spend.")},
     {"kind": "taproot_scripttree_internal", "script_type": "P2TR", "family": "Taproot",
      "label": "Taproot change with a script tree", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("Taproot change you own through the key path, but the address commits to a "
                "script tree the device does not yet parse, so it cannot confirm the "
                "output and shows it as a spend.")},
     {"kind": "taproot_scripttree_leaf", "script_type": "P2TR", "family": "Taproot",
      "label": "Taproot script-path change", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("A script-path-only taproot address whose leaf holds your key. Same "
                "limitation: the tree is unparsed, so the output is shown as a spend.")},
     {"kind": "diff_quorum_xpubs", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Different quorum, global xpubs", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("The output pays a 2-of-3 that holds your key but swaps one cosigner for "
                "an outsider. With the wallet's global xpubs present, the mismatch is "
                "caught and the output is shown as a spend.")},
     {"kind": "diff_quorum_outsider_xpub", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Different quorum, outsider xpub supplied", "outcome": "spend",
-     "screen": _D5_SPEND_RESULT, "expected": _D5_SPEND,
+     "screen": _SPEND_RESULT, "expected": _SPEND,
      "blurb": ("The same different-quorum output, with the outsider's xpub also in the "
                "global xpubs. Every key resolves, but the cosigner set still differs, so "
                "it is shown as a spend.")},
@@ -361,7 +382,7 @@ _D5_DEFS = [
     # --- accepted, shown as change (documented limitation) -------------------
     {"kind": "diff_quorum_no_xpubs", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
      "label": "Different quorum, no global xpubs", "outcome": "change",
-     "screen": _D5_CHANGE_RESULT, "expected": _D5_CHANGE,
+     "screen": _CHANGE_RESULT, "expected": _CHANGE,
      "blurb": ("The same different-quorum output, but with no global xpubs. Without them "
                "the device cannot compare cosigners, so the matching shape lets it be "
                "shown as your change though it pays a different wallet. Load the "
@@ -369,17 +390,94 @@ _D5_DEFS = [
 ]
 
 
-def _make_d5(d):
+# PR #1044: the PR's own test matrix, a decoy entry (a key this seed owns that is
+# not in the output's script) in each placement, plus the stranger-padding case
+# that still lands on the surplus count. Decoy-first and stranger-padding are
+# unchanged from #1032 and reuse its builders; the blurbs lead with what a #1032
+# build does so a tester can tell the two apart.
+_PR1044_DEFS = [
+    {"kind": "contradiction_multisig_decoy_first", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Decoy key listed first", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("A genuine multisig change output, plus a decoy entry (a key you own that "
+               "is not in the script) listed ahead of your real one. Already refused by "
+               "#1032; unchanged here.")},
+    {"kind": "decoy_last", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Decoy key listed last", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("The same decoy listed after your real entry. A #1032 build stops at the "
+               "first verified entry and only the surplus count objects, a plain "
+               "\"Transaction Problem\". Now every claim is held to the script and the "
+               "decoy is refused as an attack.")},
+    {"kind": "decoy_substituted", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Decoy key in a cosigner's place", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("The decoy replaces another cosigner's entry, so the output lists exactly "
+               "three entries for three keys and the surplus count has nothing to say. A "
+               "#1032 build shows this as change with no warning at all.")},
+    {"kind": "surplus_multisig", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Padded with a stranger's entry", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("A genuine change output plus one extra entry claiming a stranger's "
+               "fingerprint. Nothing of yours is misdescribed, so this still lands on "
+               "the surplus count, unchanged from #1032.")},
+]
+
+# PR #1040: the two fingerprint records for one key must agree. The check needs
+# the global xpubs to have anything to compare, so these builders add the
+# wallet's; one leaves them out on purpose to show the limitation.
+_PR1040_DEFS = [
+    {"kind": "cosigner_mismatch", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Cosigner fingerprint disagrees with its xpub", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("Honest change, global xpubs present, but one cosigner's entry on the "
+               "change output names a different fingerprint than that cosigner's xpub. "
+               "The key and path are right, so only the consistency check objects. "
+               "Earlier builds ignore the mislabel and show change.")},
+    {"kind": "cosigner_mismatch_input", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Cosigner fingerprint disagrees on an input", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("The same mislabel on an input entry instead of the change output. The "
+               "check walks inputs and outputs alike.")},
+    {"kind": "singlesig_xpub_mismatch", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Global xpub fingerprint disagrees with its keys", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("Honest single-sig change with the wallet's global xpub added, then the "
+               "xpub's fingerprint mislabeled. Every key entry is correct and claims "
+               "your seed; only the xpub record disagrees.")},
+    {"kind": "mismatch_beneath_contradiction", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Mismatch beneath a fake change", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("The #1032 fake change (the output pays an attacker's 2-of-3 while "
+               "claiming your key) with a cosigner mislabel on an input as well. The "
+               "fingerprint check runs last, so the device must report the attack, "
+               "not the mismatch.")},
+    {"kind": "cosigner_missing", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Cosigner fingerprint is all zeros", "outcome": "change",
+     "screen": _CHANGE_OK_RESULT, "expected": _CHANGE_OK,
+     "blurb": ("The same cosigner entry with the all-zero fingerprint a coordinator "
+               "writes for a key it cannot identify. A missing value is not a second "
+               "answer, so it is skipped and the output is correctly counted as change.")},
+    {"kind": "cosigner_mismatch_no_xpubs", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Mismatch with no global xpubs", "outcome": "change",
+     "screen": _CHANGE_RESULT, "expected": _CHANGE_NO_XPUBS,
+     "blurb": ("The mislabeled cosigner entry, but the psbt carries no global xpubs. "
+               "With no second record there is nothing to compare, so the mislabel "
+               "goes unnoticed and the output is shown as change.")},
+]
+
+
+def _make_pr_test(pr, d):
     info = script_types.get(d["script_type"])
     base_wallet = WALLET_FOR_SCRIPT_TYPE[d["script_type"]]
     slug = d["kind"].replace("_", "-")
     return Scenario(
-        id=f"test-1032-{slug}", wallet=base_wallet, script_type=d["script_type"],
+        id=f"test-{pr}-{slug}", wallet=base_wallet, script_type=d["script_type"],
         num_inputs=DEFAULT_NUM_INPUTS, output_shape="change", network="main",
-        title=f"{_D5_ICON[d['outcome']]} {d['label']} ({d['family']})",
+        title=f"{_ICON[d['outcome']]} {d['label']} ({d['family']})",
         blurb=d["blurb"], is_default=False,
         tags=["test", d["label"], info.label],
-        pr="1032", attack=d["kind"], load_seed=TEST_VICTIM_SEED,
+        pr=pr, attack=d["kind"], load_seed=TEST_VICTIM_SEED,
         expected=d["expected"], expected_screen=d["screen"], outcome=d["outcome"],
     )
 
@@ -393,6 +491,10 @@ def test_scenarios() -> list:
         for script_type, family in TEST_SCRIPT_FAMILIES:
             out.append(_make_test(attack, script_type, family))
     out.append(_make_test("wrong_seed", "P2WPKH", "Native SegWit"))
-    # PR #1032 / D5: output-ownership contradictions and malformed derivation data.
-    out.extend(_make_d5(d) for d in _D5_DEFS)
+    # PR #1032: output-ownership contradictions and malformed derivation data.
+    out.extend(_make_pr_test("1032", d) for d in _PR1032_DEFS)
+    # PR #1044: a decoy claim of ours in every placement on a multisig output.
+    out.extend(_make_pr_test("1044", d) for d in _PR1044_DEFS)
+    # PR #1040: the two fingerprint records for a key must agree.
+    out.extend(_make_pr_test("1040", d) for d in _PR1040_DEFS)
     return out
