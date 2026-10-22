@@ -608,7 +608,7 @@ _PR995_DEFS = [
     # that cannot say what an input is worth.
     {"kind": "legacy_outpoint_out_of_range", "script_type": "P2PKH", "family": "Legacy",
      "label": "Outpoint index does not exist", "outcome": "refuse",
-     "screen": _ATTACK_SCREEN, "expected": _UNVERIFIED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("Input 0's non-witness UTXO is genuine, but the input claims to "
                "spend an output one past the end of it, so no amount can be read for it "
                "at all. Checking the txid does not catch this, since the txid is "
@@ -617,7 +617,7 @@ _PR995_DEFS = [
                "on an unhandled error rather than reporting anything.")},
     {"kind": "legacy_no_utxo_data", "script_type": "P2PKH", "family": "Legacy",
      "label": "No input amount data at all", "outcome": "refuse",
-     "screen": _ATTACK_SCREEN, "expected": _UNVERIFIED,
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("Input 0 carries neither a non-witness UTXO nor a witness UTXO, so the "
                "psbt says nothing at all about what it is worth: there is not even a "
                "claim to disbelieve. Without the check this one also aborts on an "

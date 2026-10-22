@@ -237,8 +237,10 @@ def verify_scenario(entry, seeds, full: bool, parser_cls, seed_cls, ss_network):
                        seed_cls(seeds[signer]["mnemonic"].split()),
                        ss_network(entry["network"]))
         s = data["summary"]
-        if p.input_amount != s["input_amount"]:
-            problems.append(f"PSBTParser input {p.input_amount} != {s['input_amount']}")
+        # SeedSigner PR #995 renames input_amount to verified_input_amount
+        parsed_input = p.verified_input_amount if hasattr(p, "verified_input_amount") else p.input_amount
+        if parsed_input != s["input_amount"]:
+            problems.append(f"PSBTParser input {parsed_input} != {s['input_amount']}")
         if p.fee_amount != s["fee"]:
             problems.append(f"PSBTParser fee {p.fee_amount} != {s['fee']}")
         expect_multisig = entry["sig_type"] == "multisig"
