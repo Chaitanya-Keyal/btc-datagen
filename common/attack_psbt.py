@@ -718,7 +718,8 @@ def _pr1044_decoy_substituted(signers, network, num_inputs, threshold):
 # make the device display any fee it likes. Legacy inputs are the worst case:
 # their signatures commit to no amount at all, so the lie survives signing and
 # the difference is handed to the miner in a single session. #995's
-# _verify_input_amounts() closes three deceptions:
+# _verify_input_amounts() closes three deceptions, and refuses two shapes that
+# leave an input with no amount at all:
 #
 #   PSBTInputAmountVerificationError -> PSBTInputAmountVerificationFailedView
 #       A non_witness_utxo is the whole previous transaction, so it is hashed
@@ -727,6 +728,11 @@ def _pr1044_decoy_substituted(signers, network, num_inputs, threshold):
 #       witness_utxo sitting alongside a proven non_witness_utxo must agree
 #       with it, because embit's InputScope.utxo and PSBT.fee() prefer the
 #       witness_utxo and would otherwise display the unproven value.
+#
+#   PSBTMissingInputUtxoError -> PSBTMissingInputUtxoView
+#       An input with neither utxo field, or whose outpoint names an output its
+#       non_witness_utxo does not have, has no amount to verify. Nothing is
+#       forged, so the device calls it a "Transaction Problem", not an attack.
 #
 # The fixtures' legacy inputs carry non_witness_utxo only (common/psbt.py), so
 # each forgery adds or edits exactly the field a coordinator controls. Throwaway
