@@ -1124,21 +1124,23 @@ def _pr1046_other_wallet_legacy_multisig_output(signers, network, num_inputs):
 # problems. Outputs are deliberately exempt, since an honest payment to a
 # stranger's p2wsh carries no witness script.
 #
-# Nothing here is a plausible coordinator product: these are malformed psbts, and
-# the PR identifies no honest emitter of any of them. What makes them worth
-# running on hardware is how differently a pre-#1047 build treats them. Measured
-# on dev (#1044 and #1046 have since merged into it), the same three refusals land
-# in three different places:
+# Nothing here is a plausible coordinator product: these are malformed psbts, and the PR
+# identifies no honest emitter of any of them. What makes them worth running on hardware
+# is how differently a pre-#1047 build treats them. Measured on dev, the PR's base, the
+# same three refusals land in four different places:
 #
-#   * "Mixed inputs in the transaction", because dropping a script changes the
-#     input's apparent type and it stops matching the untouched inputs;
-#   * a raw ValueError out of embit ("Not a multisig script"), because an
-#     extraneous witness script makes _get_policy read a p2sh input as nested
-#     segwit and then parse a multisig out of whatever it finds;
-#   * nothing at all: the psbt parses and the transaction is reviewed as normal,
-#     which is the case for every wrong-script shape.
+#   * "Mixed inputs in the transaction", because dropping a script changes the input's
+#     apparent type and it stops matching the untouched inputs;
+#   * the attack screen, when the input that loses a script is nested segwit carrying
+#     only a witness UTXO: it then reads as legacy p2sh, which #995's amount check
+#     requires to carry a non-witness UTXO;
+#   * a raw ValueError out of embit ("Not a multisig script"), because an extraneous
+#     witness script makes _get_policy read a p2sh input as nested segwit and then parse
+#     a multisig out of whatever it finds;
+#   * nothing at all: the psbt parses and the transaction is reviewed as normal, which is
+#     the case for every wrong-script shape.
 #
-# Each scenario's blurb in common/scenarios.py names which of the three it was.
+# Each scenario's blurb in common/scenarios.py names which of the four it was.
 
 
 # The extraneous script's content is irrelevant to the check, so the cases that add

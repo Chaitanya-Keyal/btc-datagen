@@ -699,15 +699,18 @@ _PR1046_DEFS = [
 # PR #1047: every input must supply exactly the scripts its scriptPubKey commits to.
 # The script type is not a free choice here, it is the variable under test, so each
 # case reads its type from PR1047_CASES in common/attack_psbt.py rather than
-# repeating it. `before` is what a pre-#1047 build did with the same psbt, measured
-# on dev, which #1044 and #1046 have since merged into; it goes at the end of every
-# blurb because that is what tells a
-# tester whether the build in front of them has the fix.
+# repeating it. `before` is what the PR's base, dev, does with the same psbt. It goes at
+# the end of every blurb because that is what tells a tester whether the build in front
+# of them has the fix. It is not a record of how releases behave, so re-measure it on
+# dev whenever dev moves: #995 merging changed four of them.
 _PR1047_MIXED = ("Before the fix the input's apparent type changed with the script "
                  "gone, so it aborted on \"Mixed inputs in the transaction\" instead.")
 _PR1047_CRASH = ("Before the fix the extra witness script made the parser read this as "
                  "nested segwit multisig and then fail inside embit with a raw "
                  "\"Not a multisig script\" error.")
+_PR1047_UNPROVEN = ("Before the fix the input missing its script read as legacy p2sh, "
+                    "which must carry a non-witness UTXO. It has only a witness UTXO, so "
+                    "it was refused on the attack screen instead.")
 _PR1047_SILENT = "Before the fix the psbt parsed and the transaction was reviewed as normal."
 
 _PR1047_DEFS = [
@@ -726,12 +729,12 @@ _PR1047_DEFS = [
      "outcome": "refuse", "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("A nested single sig input with no redeem script. Note this is the input "
                "side of the same omission PR #1046 handles on an output, where leaving "
-               "it out is legal; on an input it is the one thing being checked. " + _PR1047_MIXED)},
+               "it out is legal; on an input it is the one thing being checked. " + _PR1047_UNPROVEN)},
     {"kind": "missing_witness_nested_multisig", "label": "Witness script omitted",
      "outcome": "refuse", "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("A nested segwit multisig input missing the second of its two layers. The "
                "redeem script is present and commits to a witness script that is not "
-               "there. " + _PR1047_CRASH)},
+               "there. " + _PR1047_UNPROVEN)},
     {"kind": "missing_redeem_nested_multisig", "label": "Redeem script omitted",
      "outcome": "refuse", "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
      "blurb": ("A nested segwit multisig input with its redeem script, the outer of its "
@@ -800,7 +803,7 @@ _PR1047_DEFS = [
      "blurb": ("A collaborative spend, as a payjoin would build, with the other party's "
                "redeem script left out. Whose input it is rests on the psbt's own claims, so exempting "
                "another party's input would let a coordinator claim the exemption for "
-               "any input by stripping its derivation paths. " + _PR1047_MIXED)},
+               "any input by stripping its derivation paths. " + _PR1047_UNPROVEN)},
     {"kind": "payjoin_finalized", "label": "Their input is already finalized",
      "outcome": "refuse", "screen": _PROBLEM_SCREEN,
      "expected": "Device refuses it, which is a known gap rather than the right answer.",
@@ -810,8 +813,10 @@ _PR1047_DEFS = [
                "and clears the field the check reads, so an honest input looks like one "
                "that omitted its redeem script. The PR records this as a TODO, to "
                "recover the script from the final fields and verify it the same way. "
-               "Until then it is refused. Earlier builds refuse it too, as \"Mixed "
-               "inputs in the transaction\".")},
+               "Until then it is refused. A build without the fix refuses it too, but "
+               "on the attack screen: with its script cleared the input reads as legacy "
+               "p2sh, which must carry a non-witness UTXO, and it has only a witness "
+               "UTXO.")},
     {"kind": "payjoin_wrong_redeem", "label": "Their input supplies the wrong script",
      "outcome": "refuse", "screen": _ATTACK_SCREEN, "expected": _REFUSE,
      "blurb": ("A collaborative spend where the other party's redeem script is built "
