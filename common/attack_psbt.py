@@ -37,9 +37,9 @@ import hashlib
 from copy import deepcopy
 from functools import partial
 
-from embit import bip32, script
+from embit import bip32, bip39, script
 from embit.networks import NETWORKS
-from embit.psbt import DerivationPath
+from embit.psbt import DerivationPath, InputScope, OutputScope
 from embit.transaction import TransactionOutput, Witness
 
 from common import script_types
@@ -1291,6 +1291,251 @@ PR1047_CASES = {
 }
 
 
+# --- PR #1060: every claim of ours on an input held to the input's script ------
+#
+# Re-deriving a claimed key, as #1013 does, proves this seed owns the key. It does not
+# prove the input spends with it. Anyone holding the account xpub can derive our keys,
+# so a coordinator can write a true claim of ours onto another party's input, or add a
+# decoy key of ours to our own multisig input. #1060 holds each claim on an input to the
+# script the input commits to (for taproot, the address rebuilt with the input's merkle
+# root) and adds three refusals:
+#
+#   PSBTInputOwnershipContradictionError  a key of ours the input's script does not use
+#   PSBTUnsupportedScriptPathError        our key on a taproot input is only in a leaf
+#   PSBTUnsupportedDerivationPathError    a claim at the master key, or at a one-level
+#                                         path on an input
+#
+# A taproot input that leaves out its merkle root can be neither confirmed nor refuted,
+# so its claim is set aside. With no other input of ours, that is "Seed Can't Sign".
+# With another, the psbt parses and the device signs only the inputs still ours, so the
+# set-aside input goes unsigned and nothing on screen says so.
+#
+# Two ordering changes come with it. A milder finding (a false input claim, entries in
+# both derivation maps, a surplus output entry) is held until the outputs are read, so
+# an attack on an output is the one reported. And the wrong-seed check now runs after
+# #995's and #1047's input checks, so a wrong-seed psbt with one of those problems
+# reports the problem.
+#
+# Without the fix, every psbt here but the held and wrong-seed cases parses and is
+# signed: with a useless signature for a planted or decoy key, a usable one for the
+# master key and m/5 inputs, and none at all for the three taproot shapes. Each of those
+# three builders forges every input, so that build adds no signature and stops on
+# "Signing Failed" after the review. With only some inputs forged it signs the rest and
+# shows the signed QR as usual (docs/knowledge/signing-failed-needs-zero-signatures.md),
+# which is what the one-input merkle root case records.
+
+# The other party's coin in the planted-claim case gets its own outpoint, so the
+# transaction does not spend one coin twice.
+_PR1060_FOREIGN_TXID = hashlib.sha256(b"btc-datagen-pr1060-foreign-input").digest()
+
+# Value of the extra output of ours that carries the surplus entry.
+_PR1060_SURPLUS_OUTPUT_VALUE = 10_000
+
+
+def _victim_root(victim):
+    """The victim seed's master key. The master key and a one-level path are above the
+    account xpub, so the claims at those paths are derived from the seed itself."""
+    return bip32.HDKey.from_seed(bip39.mnemonic_to_seed(victim.mnemonic),
+                                 version=NETWORKS[victim.network]["xprv"])
+
+
+def _true_claim(victim, branch: int, index: int):
+    """A key this seed really derives, annotated truthfully: our fingerprint and a path
+    we own. It is wrong only because of where a builder puts it."""
+    return (_victim_key(victim, branch, index),
+            DerivationPath(bytes.fromhex(victim.fingerprint),
+                           _forged_path(victim, branch, index)))
+
+
+def _root_claim(victim, path: list):
+    """A true claim at a path measured from the master key rather than the account:
+    [] is the master key itself, and [5] the one-level path m/5."""
+    root = _victim_root(victim)
+    key = (root.derive(path) if path else root).get_public_key()
+    return key, DerivationPath(root.my_fingerprint, list(path))
+
+
+def _pay_and_claim(scope, key, dp):
+    """Point a p2wpkh input or output at `key`, with `dp` as its only claim. A segwit
+    fixture input carries only a witness_utxo, so its scriptPubKey lives there; an
+    output's lives on the scope itself."""
+    spk = script.p2wpkh(key)
+    if isinstance(scope, InputScope):
+        scope.witness_utxo.script_pubkey = spk
+    else:
+        scope.script_pubkey = spk
+    scope.bip32_derivations.clear()
+    scope.bip32_derivations[key] = dp
+
+
+def _pr1060_foreign_input(psbt, network):
+    """Append another party's p2wpkh input, as a payjoin would: their coin, their key,
+    and none of our derivation paths. Their coin's value is added to the payment, so
+    the fee is unchanged. Returns the new input."""
+    foreign = deepcopy(psbt.inputs[0])
+    foreign.bip32_derivations.clear()
+    foreign.txid = _PR1060_FOREIGN_TXID
+    foreign.vout = 0
+    foreign.witness_utxo.script_pubkey = script.p2wpkh(
+        _attacker_pubkey(network, RECEIVE_BRANCH, 60))
+    psbt.inputs.append(foreign)
+    psbt.outputs[0].value += foreign.witness_utxo.value
+    return foreign
+
+
+def _pr1060_planted_claim(signers, network, num_inputs):
+    """A true claim of ours planted on another party's input. The claim verifies,
+    because the key really is ours, but their input's script does not use it."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    foreign = _pr1060_foreign_input(psbt, network)
+    key, dp = _true_claim(signers[0], RECEIVE_BRANCH, 7)
+    foreign.bip32_derivations[key] = dp
+    return psbt
+
+
+def _pr1060_decoy_input_multisig(signers, network, num_inputs, threshold):
+    """Our own multisig input, plus a decoy entry: a key this seed owns at an address
+    index no input uses, so the input's script has no place for it."""
+    psbt = build_psbt(signers, "P2WSH", num_inputs, "change", threshold=threshold)
+    key, dp = _true_claim(signers[0], RECEIVE_BRANCH, 500)
+    psbt.inputs[0].bip32_derivations[key] = dp
+    return psbt
+
+
+def _pr1060_taproot_root_contradicts(signers, network, num_inputs):
+    """Key path taproot inputs with no script tree, each given a merkle root it does
+    not commit to. Our internal key tweaked by that root is not the key the input pays,
+    so embit signs none of them. Every input gets the root, so a build without the fix
+    fails at signing rather than signing the rest."""
+    psbt = build_psbt(signers, "P2TR", num_inputs, "change")
+    merkle_root = _tapleaf_hash(_attacker_pubkey(network, RECEIVE_BRANCH, 61))
+    for inp in psbt.inputs:
+        inp.taproot_merkle_root = merkle_root
+    return psbt
+
+
+def _pr1060_taproot_claim_on_p2wpkh(signers, network, num_inputs):
+    """A native segwit input whose only claim of ours sits in the taproot map, on a
+    key the input's script does not use."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    inp = psbt.inputs[0]
+    inp.bip32_derivations.clear()
+    key, dp = _true_claim(signers[0], RECEIVE_BRANCH, 9)
+    inp.taproot_bip32_derivations[key] = ([], dp)
+    return psbt
+
+
+def _pr1060_taproot_leaf_only(signers, network, num_inputs):
+    """Taproot inputs spendable only through their script trees: each internal key is
+    the unspendable NUMS point, and our key for that input is in the tree's one leaf.
+    embit cannot sign a script path, so a build without the fix fails at signing."""
+    psbt = build_psbt(signers, "P2TR", num_inputs, "change")
+    for inp in psbt.inputs:
+        key, (_, dp) = next(iter(inp.taproot_bip32_derivations.items()))
+        merkle_root = _tapleaf_hash(key)
+        inp.witness_utxo.script_pubkey = _p2tr_with_script_tree(_NUMS_INTERNAL_KEY,
+                                                                merkle_root)
+        inp.taproot_internal_key = _NUMS_INTERNAL_KEY
+        inp.taproot_merkle_root = merkle_root
+        inp.taproot_bip32_derivations.clear()
+        inp.taproot_bip32_derivations[key] = ([merkle_root], dp)
+    return psbt
+
+
+def _pr1060_omit_merkle_roots(inputs, network):
+    """Point each input at our internal key tweaked by a script tree, a real key path
+    spend, while the psbt leaves out the optional merkle root needed to rebuild it."""
+    merkle_root = _tapleaf_hash(_attacker_pubkey(network, RECEIVE_BRANCH, 62))
+    for inp in inputs:
+        inp.witness_utxo.script_pubkey = _p2tr_with_script_tree(
+            inp.taproot_internal_key, merkle_root)
+
+
+def _pr1060_taproot_root_omitted(signers, network, num_inputs):
+    """Every input without its merkle root. Each claim is set aside, leaving no input
+    this seed can sign."""
+    psbt = build_psbt(signers, "P2TR", num_inputs, "change")
+    _pr1060_omit_merkle_roots(psbt.inputs, network)
+    return psbt
+
+
+def _pr1060_taproot_root_omitted_one_input(signers, network, num_inputs):
+    """Input 0 alone without its merkle root. Its claim is set aside, the other inputs
+    are still ours, and the psbt parses: the device signs those and leaves input 0
+    unsigned without saying so. A build without the fix does the same, because embit
+    cannot sign it without the root."""
+    psbt = build_psbt(signers, "P2TR", num_inputs, "change")
+    _pr1060_omit_merkle_roots(psbt.inputs[:1], network)
+    return psbt
+
+
+def _pr1060_master_key_input(signers, network, num_inputs):
+    """An input that really pays this seed's master key, claimed at the empty path."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    _pay_and_claim(psbt.inputs[0], *_root_claim(signers[0], []))
+    return psbt
+
+
+def _pr1060_master_key_change(signers, network, num_inputs):
+    """Change that really pays this seed's master key, claimed at the empty path."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    _pay_and_claim(psbt.outputs[_change_output_index(psbt)], *_root_claim(signers[0], []))
+    return psbt
+
+
+def _pr1060_one_level_input(signers, network, num_inputs):
+    """An input that really pays this seed's key at m/5, claimed at that path."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    _pay_and_claim(psbt.inputs[0], *_root_claim(signers[0], [5]))
+    return psbt
+
+
+def _pr1060_one_level_change(signers, network, num_inputs):
+    """Change that really pays this seed's key at m/5, claimed at that path."""
+    psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
+    _pay_and_claim(psbt.outputs[_change_output_index(psbt)], *_root_claim(signers[0], [5]))
+    return psbt
+
+
+def _pr1060_held_false_input_claim(signers, network, num_inputs):
+    """Change that pays a stranger while claiming this seed, plus a false claim on
+    input 0 (the #1013 bad-input forgery)."""
+    psbt = _d5_contradiction_singlesig(signers, network, num_inputs)
+    victim = signers[0]
+    _forge_scope_claim(psbt.inputs[0], bytes.fromhex(victim.fingerprint),
+                       _forged_path(victim, RECEIVE_BRANCH, 0),
+                       _attacker_pubkey(network, RECEIVE_BRANCH, 0), is_taproot=False)
+    return psbt
+
+
+def _pr1060_held_mixed_types_input(signers, network, num_inputs):
+    """Change that pays a stranger while claiming this seed, plus a taproot map entry
+    on input 0 beside its own entry. The added entry names a stranger's fingerprint,
+    so only the rule against using both maps applies to it."""
+    psbt = _d5_contradiction_singlesig(signers, network, num_inputs)
+    psbt.inputs[0].taproot_bip32_derivations[_attacker_pubkey(network, RECEIVE_BRANCH, 3)] = (
+        [], DerivationPath(_attacker_fingerprint(network),
+                           _forged_path(signers[0], RECEIVE_BRANCH, 3)))
+    return psbt
+
+
+def _pr1060_held_surplus_output(signers, network, num_inputs):
+    """Change that pays a stranger while claiming this seed, plus a second output of
+    ours ahead of it that lists two derivation paths for its one key. The extra
+    output's value comes out of the payment, so the fee is unchanged."""
+    psbt = _d5_contradiction_singlesig(signers, network, num_inputs)
+    victim = signers[0]
+    key, dp = _true_claim(victim, CHANGE_BRANCH, 1)
+    out = OutputScope(vout=TransactionOutput(_PR1060_SURPLUS_OUTPUT_VALUE,
+                                             script.p2wpkh(key)))
+    out.bip32_derivations[key] = dp
+    surplus_key, surplus_dp = _true_claim(victim, RECEIVE_BRANCH, 0)
+    out.bip32_derivations[surplus_key] = surplus_dp
+    psbt.outputs.insert(_change_output_index(psbt), out)
+    psbt.outputs[0].value -= _PR1060_SURPLUS_OUTPUT_VALUE
+    return psbt
+
+
 _TEST_BUILDERS = {
     "contradiction_singlesig": _d5_contradiction_singlesig,
     "contradiction_pays_us_claims_other": _d5_contradiction_pays_us_claims_other,
@@ -1335,6 +1580,22 @@ _TEST_BUILDERS = {
     "legacy_prev_tx_tampered": _pr995_prev_tx_tampered,
     "legacy_outpoint_out_of_range": _pr995_outpoint_out_of_range,
     "legacy_no_utxo_data": _pr995_no_utxo_data,
+    "planted_claim": _pr1060_planted_claim,
+    "decoy_input_multisig": _pr1060_decoy_input_multisig,
+    "taproot_root_contradicts": _pr1060_taproot_root_contradicts,
+    "taproot_claim_on_p2wpkh": _pr1060_taproot_claim_on_p2wpkh,
+    "taproot_leaf_only": _pr1060_taproot_leaf_only,
+    "taproot_root_omitted": _pr1060_taproot_root_omitted,
+    "taproot_root_omitted_one_input": _pr1060_taproot_root_omitted_one_input,
+    "master_key_input": _pr1060_master_key_input,
+    "master_key_change": _pr1060_master_key_change,
+    "one_level_input": _pr1060_one_level_input,
+    "one_level_change": _pr1060_one_level_change,
+    "held_false_input_claim": _pr1060_held_false_input_claim,
+    "held_mixed_types_input": _pr1060_held_mixed_types_input,
+    "held_surplus_output": _pr1060_held_surplus_output,
+    # #995's forged legacy amount, loaded with a seed that is not in the wallet
+    "wrong_seed_fee_lie": _pr995_fee_lie_p2pkh,
 }
 
 # Kinds that need the wallet threshold passed through (multisig builders).
@@ -1347,7 +1608,8 @@ _MULTISIG_KINDS = {"contradiction_multisig", "contradiction_multisig_unclaimed",
                    "decoy_last", "decoy_substituted",
                    "cosigner_mismatch", "cosigner_mismatch_input", "cosigner_missing",
                    "cosigner_mismatch_no_xpubs", "mismatch_beneath_contradiction",
-                   "legacy_fee_lie_multisig", "legacy_no_prev_tx_multisig"}
+                   "legacy_fee_lie_multisig", "legacy_no_prev_tx_multisig",
+                   "decoy_input_multisig"}
 
 # PR #1047's kinds are registered from PR1047_CASES rather than listed by hand, so
 # the builder, the script type and the threshold requirement all come from the one
@@ -1366,7 +1628,7 @@ def build_test_psbt(kind: str, signers: list, script_type: str,
     """The PSBT for one test scenario, by its `attack` kind. Covers every PR:
     #1013's two forgeries and its honest wrong-seed psbt, then the per-output
     builders for #1032, #1044, #1040, #1046, and #1047, #995's legacy
-    input-amount lies, and #1041's negative-fee psbt."""
+    input-amount lies, #1041's negative-fee psbt, and #1060's input claims."""
     if kind in ("fake_change", "bad_input"):
         return build_attack_psbt(kind, signers, script_type, network, num_inputs, threshold)
     if kind == "wrong_seed":

@@ -79,7 +79,7 @@ class Scenario:
     # point of the wrong-seed case); `expected*` describe what the device should
     # do so the sample is useful to run on hardware.
     pr: str = None                     # "1013" | "1032" | "1044" | "1040" | "1046"
-                                       # | "1047" | "995" | "1041"
+                                       # | "1047" | "995" | "1041" | "1060" | "dev"
     attack: str = None
     load_seed: str = None
     expected: str = None
@@ -224,6 +224,15 @@ TEST_PR_GROUPS = [
                   "fee."),
     },
     {
+        "pr": "1060",
+        "label": "PR #1060: input claims",
+        "url": "https://github.com/seedsigner/seedsigner/pull/1060",
+        "blurb": ("Anyone holding the account xpub can derive this seed's keys and write a "
+                  "true claim of ours where it does not belong. A key of ours on an input "
+                  "must now be one the input's script really uses. Milder findings wait "
+                  "until the outputs are read, so an attack there is the one reported."),
+    },
+    {
         "pr": "dev",
         "label": "dev: current behavior",
         "url": "https://github.com/seedsigner/seedsigner/tree/dev",
@@ -306,6 +315,8 @@ def _make_test(attack, script_type, family):
 _ATTACK_SCREEN = "Suspicious Transaction / Likely an Attack!"
 _PROBLEM_SCREEN = "Transaction Problem"
 _ERROR_SCREEN = "Generic error screen"
+_CANT_SIGN_SCREEN = "Seed Can't Sign"
+_NOT_YET_SCREEN = "Not Yet Implemented"
 _SPEND_RESULT = "Shown as a payment, not change"
 _CHANGE_RESULT = "Shown as change (a limitation)"
 _CHANGE_OK_RESULT = "Shown as change (correct)"
@@ -318,6 +329,8 @@ _CHANGE = "Without a descriptor the device shows it as change; load the descript
 _CHANGE_OK = "Device should parse it and show the output as change."
 _CHANGE_NO_XPUBS = "With no global xpubs there is nothing to compare, so the device shows it as change."
 _UNVERIFIED = "Device should discard it: the input amounts cannot be confirmed."
+_CANT_SIGN = "Device should say this seed can't sign it."
+_UNSUPPORTED = "Device should refuse it as not yet supported."
 
 # `expected` serves two readers: whoever maintains these definitions, and the
 # tester holding the device. Most of them only restate `outcome` and the screen
@@ -327,8 +340,8 @@ _UNVERIFIED = "Device should discard it: the input amounts cannot be confirmed."
 # refusal is a known gap rather than the right answer, or what to load to catch
 # what the device just missed.
 _OBVIOUS_EXPECTATIONS = frozenset({
-    _REFUSE, _MALFORMED, _ERROR, _SPEND, _CHANGE_OK, _UNVERIFIED,
-    "Device should say this seed can't sign it.",
+    _REFUSE, _MALFORMED, _ERROR, _SPEND, _CHANGE_OK, _UNVERIFIED, _CANT_SIGN,
+    _UNSUPPORTED,
 })
 
 
@@ -842,6 +855,147 @@ _PR1041_DEFS = [
 ]
 
 
+# PR #1060: each claim of ours on an input is held to the script the input commits to.
+# #1060 is stacked on #1047, so "before the fix" is measured on #1047's head; current
+# dev does the same with every psbt here. A build without the fix parses all but the
+# held and wrong-seed cases, then signs. The taproot refusals forge every input, so that
+# build adds no signature at all and stops on "Signing Failed" after the review; the
+# one-input merkle root case shows what happens when it can sign the rest.
+_PR1060_HELD = ("Before the fix the milder finding was checked first and the device "
+                "stopped on it, as \"Transaction Problem\" rather than an attack warning.")
+_PR1060_SIGNING_FAILED = ("Before the fix the transaction was reviewed as normal and then "
+                          "stopped on \"Signing Failed\", since embit added no signature.")
+_PR1060_FAKE_CHANGE = ("Two problems. The change output claims your key at your change path "
+                       "but pays someone else's, so the funds really leave. ")
+
+_PR1060_DEFS = [
+    # --- a true key of ours that the input's script does not use (attack) ----
+    {"kind": "planted_claim", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Your key planted on their input", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("A collaborative spend, as a payjoin would build: your three inputs and "
+               "another party's. Their input carries a true claim of yours, your "
+               "fingerprint on a key your seed really derives, which anyone with your "
+               "account xpub can work out. But their input's script pays their own key. "
+               "Before the fix the device signed as normal, adding a signature for their "
+               "input that can never spend it.")},
+    {"kind": "decoy_input_multisig", "script_type": "P2WSH", "family": "Multisig (2-of-3)",
+     "label": "Decoy key on your own input", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("Your own 2-of-3 input, with its real derivation entries plus a decoy: a "
+               "key your seed really derives, at an address index no input uses, so the "
+               "input's witness script has no place for it. Before the fix the device "
+               "signed as normal, adding a signature with the decoy key that can never "
+               "help spend the coin.")},
+    {"kind": "taproot_claim_on_p2wpkh", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Taproot claim on a native segwit input", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("Input 0's only claim of yours sits in the taproot derivation map, on a key "
+               "of yours its p2wpkh script does not use. Only a taproot input commits to "
+               "a tweaked key, so nothing can explain the mismatch. Before the fix the "
+               "psbt parsed and the device signed it.")},
+    {"kind": "taproot_root_contradicts", "script_type": "P2TR", "family": "Taproot",
+     "label": "Merkle root the address does not commit to", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": ("Every input is your own key path taproot coin with no script tree, but "
+               "the psbt supplies a merkle root for each one anyway. Your internal key "
+               "tweaked by that root is not the key the input pays, so the psbt "
+               "contradicts its own claim. " + _PR1060_SIGNING_FAILED)},
+
+    # --- shapes the device cannot check or sign yet ---------------------------
+    {"kind": "taproot_leaf_only", "script_type": "P2TR", "family": "Taproot",
+     "label": "Your key only in a script leaf", "outcome": "refuse",
+     "screen": _NOT_YET_SCREEN, "expected": _UNSUPPORTED,
+     "blurb": ("Every input pays a taproot address spendable only through its script "
+               "tree: the internal key is the provably unspendable NUMS point, and your "
+               "key is in the tree's one leaf. The device cannot sign a script path "
+               "spend yet. " + _PR1060_SIGNING_FAILED)},
+    {"kind": "taproot_root_omitted", "script_type": "P2TR", "family": "Taproot",
+     "label": "Merkle root left out", "outcome": "refuse",
+     "screen": _CANT_SIGN_SCREEN, "expected": _CANT_SIGN,
+     "blurb": ("Every input is your own taproot coin, spendable through its key path, at "
+               "an address that tweaks your internal key by a script tree. Nothing is "
+               "forged, but the psbt leaves out the optional merkle root needed to "
+               "rebuild that address, so each claim can be neither confirmed nor "
+               "refuted. Each is set aside, which leaves no input this seed can sign. "
+               + _PR1060_SIGNING_FAILED)},
+    {"kind": "taproot_root_omitted_one_input", "script_type": "P2TR", "family": "Taproot",
+     "label": "Merkle root left out on one input", "outcome": "change",
+     "screen": _CHANGE_OK_RESULT,
+     "expected": ("Device signs the other two inputs and leaves input 0 unsigned, with no "
+                  "warning. The PR sets that input aside by design."),
+     "blurb": ("Input 0 is your own taproot coin, spendable through its key path, at an "
+               "address that tweaks your internal key by a script tree. Nothing is "
+               "forged, but the psbt leaves out the optional merkle root needed to "
+               "rebuild that address, so the claim on input 0 can be neither confirmed "
+               "nor refuted. The other two inputs are ordinary. The fix sets input 0 "
+               "aside as not yours and signs the other two, and nothing on screen says "
+               "input 0 was skipped. Builds without the fix end the same way, because "
+               "embit cannot sign input 0 without the merkle root.")},
+
+    # --- claims at paths no wallet uses ("Transaction Problem") --------------
+    {"kind": "master_key_input", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Input at the master key", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("Input 0 really pays your seed's master key and claims it at the empty "
+               "path m. No wallet spends from the master key, though embit will sign for "
+               "it. Before the fix the device signed as normal, including a valid "
+               "signature for that coin.")},
+    {"kind": "master_key_change", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Change to the master key", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("The change output really pays your seed's master key and claims it at the "
+               "empty path m. No wallet receives at the master key. Before the fix the "
+               "device showed it as your change.")},
+    {"kind": "one_level_input", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Input at a one-level path", "outcome": "refuse",
+     "screen": _PROBLEM_SCREEN, "expected": _MALFORMED,
+     "blurb": ("Input 0 really pays your seed's key at m/5 and claims it at that path. A "
+               "path of one level cannot hold both a branch and an address index, so no "
+               "wallet spends from one. Before the fix the device signed as normal, "
+               "including a valid signature for that coin.")},
+    {"kind": "one_level_change", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Change at a one-level path", "outcome": "change",
+     "screen": _CHANGE_RESULT,
+     "expected": "Device shows it as change, a known gap: the PR leaves change paths to a follow-up.",
+     "blurb": ("The change output really pays your seed's key at m/5 and claims it at that "
+               "path. The fix refuses that path on an input but not on an output, where "
+               "the rules for change paths are left to a follow-up PR, so this is still "
+               "shown as change. Builds without the fix do the same.")},
+
+    # --- a milder finding held until the outputs are read (attack) -----------
+    {"kind": "held_false_input_claim", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Fake change behind a false input claim", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": (_PR1060_FAKE_CHANGE + "Input 0 also claims your fingerprint on a key your "
+               "seed does not derive, which could be an honest bug. " + _PR1060_HELD)},
+    {"kind": "held_mixed_types_input", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Fake change behind mixed path types", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": (_PR1060_FAKE_CHANGE + "Input 0 also lists entries in both the ecdsa and "
+               "taproot derivation maps, which no script can use and which could be an "
+               "honest bug. " + _PR1060_HELD)},
+    {"kind": "held_surplus_output", "script_type": "P2WPKH", "family": "Native SegWit",
+     "label": "Fake change behind a surplus path entry", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE,
+     "blurb": (_PR1060_FAKE_CHANGE + "A second output of yours, listed ahead of it, gives "
+               "two derivation paths for its one key, which could be an honest bug. "
+               + _PR1060_HELD)},
+
+    # --- the wrong-seed check now waits for the input checks ------------------
+    {"kind": "wrong_seed_fee_lie", "script_type": "P2PKH", "family": "Legacy",
+     "label": "Wrong seed, forged input amount", "outcome": "refuse",
+     "screen": _ATTACK_SCREEN, "expected": _REFUSE, "load_seed": TEST_DECOY_SEED,
+     "blurb": ("The seed to load is not in this wallet, and input 0 is also forged: its "
+               "non-witness UTXO proves it is worth "
+               f"{PR995_REAL_INPUT_VALUE:,} sats, but a witness UTXO beside it claims "
+               f"only {PR995_CLAIMED_INPUT_VALUE:,}. The fix checks the inputs before "
+               "asking whether the seed can sign, so the forgery is reported. Before the "
+               "fix the device said only that this seed can't sign it."),
+     "summary_note": _PR995_FEE_LIE_NOTE},
+]
+
+
 # Not tied to a PR. The unsupported-script-type abort sat under #1032 while having
 # nothing to do with change ownership, and #995 changes which screen it reaches, so
 # it belongs here rather than under either one.
@@ -867,7 +1021,7 @@ def _make_pr_test(pr, d):
         title=f"{_ICON[d['outcome']]} {d['label']} ({d['family']})",
         blurb=d["blurb"], is_default=False,
         tags=["test", d["label"], info.label],
-        pr=pr, attack=d["kind"], load_seed=TEST_VICTIM_SEED,
+        pr=pr, attack=d["kind"], load_seed=d.get("load_seed", TEST_VICTIM_SEED),
         expected=d["expected"], expected_screen=d["screen"], outcome=d["outcome"],
         summary_note=d.get("summary_note"),
     )
@@ -902,6 +1056,8 @@ def test_scenarios() -> list:
     out.extend(_make_pr_test("995", d) for d in _PR995_DEFS)
     # PR #1041: outputs may not exceed inputs. One case; the check does not vary by type.
     out.extend(_make_pr_test("1041", d) for d in _PR1041_DEFS)
+    # PR #1060: each claim of ours on an input held to the input's script.
+    out.extend(_make_pr_test("1060", d) for d in _PR1060_DEFS)
     # Not a PR: what the current dev build does.
     out.extend(_make_pr_test("dev", d) for d in _DEV_DEFS)
     return out

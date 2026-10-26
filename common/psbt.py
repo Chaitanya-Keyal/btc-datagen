@@ -257,14 +257,20 @@ def _output_kind(out) -> str:
     path element then says which branch it's on (1 = change, 0 = receive, i.e.
     a self-transfer). Note SeedSigner's PSBTParser lumps both of ours into
     `change_data`, so a self-transfer shows on-device as two change outputs.
+
+    A path too short to name a branch (the master key, or m/5, in the PR #1060 test
+    scenarios) is still a claim of ours, so it counts as change, as a device without
+    that PR shows it.
     """
     if out.bip32_derivations:
         _, der = next(iter(out.bip32_derivations.items()))
-        return "change" if der.derivation[-2] == CHANGE_BRANCH else "self_transfer"
-    if out.taproot_bip32_derivations:
+    elif out.taproot_bip32_derivations:
         _, (_, der) = next(iter(out.taproot_bip32_derivations.items()))
-        return "change" if der.derivation[-2] == CHANGE_BRANCH else "self_transfer"
-    return "external"
+    else:
+        return "external"
+    if len(der.derivation) < 2 or der.derivation[-2] == CHANGE_BRANCH:
+        return "change"
+    return "self_transfer"
 
 
 def summarize(psbt: PSBT, network: str = "main") -> dict:
