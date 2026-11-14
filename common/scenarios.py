@@ -348,7 +348,9 @@ def _make_test(attack, script_type, family):
 # phrase it.
 _ATTACK_SCREEN = "Suspicious Transaction / Likely an Attack!"
 _PROBLEM_SCREEN = "Transaction Problem"
-_ERROR_SCREEN = "Generic error screen"
+# The controller's catch-all for an exception no view handles: title / headline,
+# where the headline is the exception's type.
+_ERROR_SCREEN = "System Error / RuntimeError"
 _CANT_SIGN_SCREEN = "Seed Can't Sign"
 _NOT_YET_SCREEN = "Not Yet Implemented"
 _UNSAFE_PATH_SCREEN = "Suspicious Transaction / Unsafe Derivation Path"
@@ -360,7 +362,7 @@ _OP_RETURN_SCREEN = "OP_RETURN"
 
 _REFUSE = "Device should refuse it as likely an attack."
 _MALFORMED = "Device should reject it as a malformed transaction."
-_ERROR = "Device should abort to the generic error screen."
+_ERROR = "Device should abort to the System Error screen."
 _SPEND = "Device should show the output as a payment out, not change."
 _CHANGE = "Without a descriptor the device shows it as change; load the descriptor to catch it."
 _CHANGE_OK = "Device should parse it and show the output as change."
@@ -1316,17 +1318,18 @@ _PR1043_DEFS = [
 
 
 # Not tied to a PR. The unsupported-script-type abort sat under #1032 while having
-# nothing to do with change ownership, and #995 changes which screen it reaches, so
-# it belongs here rather than under either one.
+# nothing to do with change ownership, so it belongs here. Its inputs carry their
+# previous transactions so that #995's input-amount check passes and the psbt reaches
+# the script-type abort; with a witness UTXO alone, that check refuses it first.
 _DEV_DEFS = [
     {"kind": "unsupported_script_type", "script_type": "P2WPKH", "family": "bare p2pk",
      "label": "Unsupported script type", "outcome": "error",
      "screen": _ERROR_SCREEN, "expected": _ERROR,
      "blurb": ("The inputs and change use bare pay-to-pubkey, which the device does not "
-               "support. It aborts rather than guess. No dedicated screen for this yet. "
-               "PR #995 changes the destination: bare p2pk types as None, which its "
-               "input-amount check reads as an amount it cannot prove, so the abort "
-               "becomes a refusal on the attack screen instead.")},
+               "support. Each input carries its previous transaction as a non-witness "
+               "UTXO, so its amount can be proven and the device gets as far as the "
+               "script type. There it aborts rather than guess, on the System Error "
+               "screen, since there is no dedicated screen for this yet.")},
 ]
 
 

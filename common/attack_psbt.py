@@ -534,15 +534,27 @@ def _d5_contradiction_multisig_bad_script(signers, network, num_inputs, threshol
 def _d5_unsupported_script_type(signers, network, num_inputs):
     """Inputs and change output both use bare p2pk, which embit types as None.
 
-    The output's None policy shape matches the inputs', so it reaches the parser's
-    catch-all for unhandled script types, which aborts with a RuntimeError.
+    Bare p2pk is a legacy script, so its sighash commits to no amount, and since
+    PR #995 the device refuses such an input unless it can hash the previous
+    transaction. Each input therefore carries a genuine non-witness UTXO (a funding
+    transaction paying its p2pk script, which the input's prevout really spends) and
+    no witness UTXO, the way a wallet would supply a legacy input. The amount check
+    passes, and the psbt goes on to whatever the device does with a script type it
+    does not support. Keys and derivation paths are the native segwit wallet's; only
+    the scripts change.
     """
     psbt = build_psbt(signers, "P2WPKH", num_inputs, "change")
     victim = signers[0]
     idx = _change_output_index(psbt)
-    # Repoint every input's committed script and the change output at p2pk.
     for i, inp in enumerate(psbt.inputs):
-        inp.witness_utxo.script_pubkey = _p2pk(_victim_key(victim, RECEIVE_BRANCH, i))
+        ctx = _ScriptContext(signers, None, "P2WPKH", RECEIVE_BRANCH, i)
+        ctx.script_pubkey = _p2pk(_victim_key(victim, RECEIVE_BRANCH, i))
+        funding_tx = _funding_tx(ctx, inp.witness_utxo.value, i)
+        inp.non_witness_utxo = funding_tx
+        inp.witness_utxo = None
+        # The prevout lives on the input scope; psbt.tx is rebuilt from it.
+        inp.txid = funding_tx.txid()
+        inp.vout = 0
     psbt.outputs[idx].script_pubkey = _p2pk(_victim_key(victim, CHANGE_BRANCH, 0))
     return psbt
 

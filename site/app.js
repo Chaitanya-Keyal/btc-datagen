@@ -1098,7 +1098,7 @@ function renderFlow() {
 function outcomePhrase(s) {
   const scr = s.expected_screen;
   switch (s.outcome) {
-    case 'error': return `should abort to the <b>${scr}</b>`;
+    case 'error': return `should abort to “<b>${scr}</b>”`;
     case 'warn': return `should warn “<b>${scr}</b>”, then let you continue`;
     case 'spend':
     case 'change':
