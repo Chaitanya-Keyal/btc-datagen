@@ -18,6 +18,12 @@
   --warn-bg: #fff4e5;
   --warn-line: #f0b429;
   --warn-text: #6b4708;
+  /* The device's own dire-warning orange, for sats a transaction destroys */
+  --dire-bg: #fff0e6;
+  --dire-line: #ff5700;
+  --dire-text: #8f2f00;
+  /* A faint fill, just enough to set a quiet pill off from the card behind it */
+  --quiet-bg: #eef1f4;
   --radius: 12px;
   --pad: 16px;
 }
@@ -36,6 +42,10 @@
     --warn-bg: #3a2c0c;
     --warn-line: #b9821a;
     --warn-text: #ffd88a;
+    --dire-bg: #3d1a08;
+    --dire-line: #ff6a1a;
+    --dire-text: #ffb48a;
+    --quiet-bg: #252c35;
   }
 }
 
@@ -359,6 +369,11 @@ input[type="range"] { width: 100%; height: 40px; accent-color: var(--accent); }
 }
 .pill-change { border-color: var(--accent); color: var(--accent); }
 .pill-external { border-color: var(--warn-line); color: var(--warn-text); background: var(--warn-bg); }
+/* An OP_RETURN that carries no sats moves no money, so its pill stays quiet: plain
+   colors on a faint gray. One that carries sats destroys them, the loudest thing in the
+   table. */
+.pill-op-return { background: var(--quiet-bg); }
+.pill-burn { border-color: var(--dire-line); color: var(--dire-text); background: var(--dire-bg); }
 
 /* Column-major: the numbering runs DOWN each column, not across the rows, which
    is how a mnemonic is written on a seed card and shown on the device. Row count

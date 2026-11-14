@@ -32,7 +32,16 @@ FEE = 10_000                # flat network fee for every scenario
 RECEIVE_BRANCH = 0
 CHANGE_BRANCH = 1
 
+# Script opcodes for OP_RETURN outputs. Opcodes 0x01 through 0x4b are themselves the
+# byte count of the push that follows; OP_PUSHDATA1, 2, and 4 are followed by a 1-, 2-,
+# or 4-byte little-endian length.
 OP_RETURN = 0x6a
+OP_PUSHDATA_MAX_DIRECT = 0x4b
+OP_PUSHDATA1 = 0x4c
+OP_PUSHDATA2 = 0x4d
+OP_PUSHDATA4 = 0x4e
+OP_16 = 0x60
+_PUSHDATA_LENGTH_SIZE = {OP_PUSHDATA1: 1, OP_PUSHDATA2: 2, OP_PUSHDATA4: 4}
 
 # Output shapes. Each entry lists what the transaction pays to, in order.
 #   external      -> a third-party recipient (no derivation info in the PSBT)
@@ -285,6 +294,36 @@ def _output_kind(out) -> str:
     return "self_transfer"
 
 
+def op_return_payload_size(script_data: bytes):
+    """How many bytes of data an OP_RETURN script carries, counted the way SeedSigner
+    counts them, or None when the script is not made of complete pushes, which
+    SeedSigner refuses as malformed.
+
+    OP_0, OP_1NEGATE, OP_RESERVED, and OP_1 through OP_16 push no data bytes, but
+    SeedSigner keeps each one's opcode byte as part of the payload, so each counts as one.
+    """
+    size, i = 0, 1      # start after the OP_RETURN opcode itself
+    while i < len(script_data):
+        opcode = script_data[i]
+        if 1 <= opcode <= OP_PUSHDATA_MAX_DIRECT:
+            length_size, length = 0, opcode
+        elif opcode in _PUSHDATA_LENGTH_SIZE:
+            length_size = _PUSHDATA_LENGTH_SIZE[opcode]
+            if i + 1 + length_size > len(script_data):
+                return None
+            length = int.from_bytes(script_data[i + 1:i + 1 + length_size], "little")
+        elif opcode <= OP_16:
+            size, i = size + 1, i + 1
+            continue
+        else:
+            return None
+        i += 1 + length_size + length
+        if i > len(script_data):
+            return None
+        size += length
+    return size
+
+
 def summarize(psbt: PSBT, network: str = "main") -> dict:
     """Plain-language description of a PSBT, for display alongside its QR."""
     from embit.networks import NETWORKS
@@ -310,9 +349,13 @@ def summarize(psbt: PSBT, network: str = "main") -> dict:
         output_total += value
         spk = psbt.tx.vout[i].script_pubkey
         if spk.data[:1] == bytes([OP_RETURN]):
-            # A data carrier has no address, and printing the raw script would put
-            # the whole payload in the picker (which can now be tens of kilobytes).
-            address = f"OP_RETURN ({len(spk.data):,}-byte script)"
+            # A data carrier has no address, and its payload can run to tens of
+            # kilobytes, so describe it by the size of its data instead. That is the
+            # number the device's OP_RETURN screen reports, not the script's size, which
+            # adds the push prefixes. The row's pill already says OP_RETURN.
+            size = op_return_payload_size(spk.data)
+            address = ("malformed script" if size is None
+                       else "no data" if size == 0 else f"{size:,} bytes")
         else:
             try:
                 address = spk.address(net)

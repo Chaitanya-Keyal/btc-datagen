@@ -1183,7 +1183,7 @@ _PR1042_DEFS = [
     {"kind": "direct_push", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "Text payload, pushed directly", "outcome": "display",
      "screen": _OP_RETURN_SCREEN, "expected": _DISPLAY,
-     "blurb": ("A 40 byte message pushed the way Bitcoin Core encodes one: the push "
+     "blurb": ("A 40-byte message pushed the way Bitcoin Core encodes one: the push "
                "opcode is itself the length, so the prefix is two bytes, not three. "
                "Before the fix the device read past three and showed the message "
                "missing its first letter. With the fix it shows the message whole.")},
@@ -1205,7 +1205,7 @@ _PR1042_DEFS = [
     {"kind": "pushdata2", "script_type": "P2WPKH", "family": "Native SegWit",
      "label": "300 bytes needs a two-byte length", "outcome": "display",
      "screen": _OP_RETURN_SCREEN, "expected": _DISPLAY,
-     "blurb": ("300 bytes, which needs a two byte length on the push. Before the fix "
+     "blurb": ("300 bytes, which needs a two-byte length on the push. Before the fix "
                "the device read past only one of them, leaving the other stuck on the "
                "front of the payload. With the fix the payload starts where it "
                "should; it still runs off the bottom of the screen until PR #1043 "

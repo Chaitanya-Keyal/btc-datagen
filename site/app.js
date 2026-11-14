@@ -953,14 +953,27 @@ function truncatedAddr(address) {
     ><span class="addr-head">${head}</span><span class="addr-tail">${tail}</span></div>`;
 }
 
+/* Pill class and label for one output in the transaction summary. An OP_RETURN that
+   carries sats destroys them, so it gets the loudest pill on the page; one that carries
+   none moves no money and gets a quiet gray one. */
+function outputPill(o) {
+  switch (o.kind) {
+    case 'external': return ['pill-external', 'recipient'];
+    case 'change': return ['pill-change', 'change'];
+    case 'op_return': return [o.value > 0 ? 'pill-burn' : 'pill-op-return', 'OP_RETURN'];
+    default: return ['pill-change', 'self-transfer'];
+  }
+}
+
 function renderTxSummary() {
   const s = state.scenarioData.summary;
   const rows = s.outputs.map((o) => {
-    const cls = o.kind === 'external' ? 'pill-external' : 'pill-change';
-    const label = o.kind === 'external' ? 'recipient'
-      : (o.kind === 'change' ? 'change'
-      : (o.kind === 'op_return' ? 'OP_RETURN' : 'self-transfer'));
-    return `<tr><th class="kv-wide"><span class="pill ${cls}">${label}</span>${truncatedAddr(o.address)}</th>
+    const [cls, label] = outputPill(o);
+    // An OP_RETURN's second line is the size of its data, not an address, so there
+    // is no tail to preserve and nothing to truncate.
+    const detail = o.kind === 'op_return'
+      ? `<div class="addr">${o.address}</div>` : truncatedAddr(o.address);
+    return `<tr><th class="kv-wide"><span class="pill ${cls}">${label}</span>${detail}</th>
             <td class="num">${sats(o.value)}</td></tr>`;
   }).join('');
 
@@ -1080,8 +1093,8 @@ function renderFlow() {
 /* The what-to-load / what-should-happen note for a PR test scenario. Empty and
    hidden for every ordinary demo transaction. */
 /* How the fixed device should react, phrased by outcome: most abort to a warning
-   screen, some warn and let the user go on, and some parse with no warning and
-   only classify the output. */
+   screen, some warn and let the user go on, some parse with no warning and only
+   classify the output, and some parse and are only about what reaches the screen. */
 function outcomePhrase(s) {
   const scr = s.expected_screen;
   switch (s.outcome) {
@@ -1089,9 +1102,9 @@ function outcomePhrase(s) {
     case 'warn': return `should warn “<b>${scr}</b>”, then let you continue`;
     case 'spend':
     case 'change':
-      return `should parse with no warning, and show the output <b>${scr.toLowerCase()}</b>`;
+      return `should parse with no warning and show the output <b>${scr.toLowerCase()}</b>`;
     case 'display':
-      return `should parse, and reach the <b>${scr}</b> screen`;
+      return `should parse and reach the <b>${scr}</b> screen`;
     default: return `should route to “<b>${scr}</b>”`;
   }
 }

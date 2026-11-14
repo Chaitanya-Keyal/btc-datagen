@@ -9,7 +9,7 @@ with its scenario in common/scenarios.py.
     direct_push    40 bytes pushed with the minimal (direct) opcode
     binary         75 bytes that are not valid UTF-8, so the screen shows hex
     pushdata1      80 bytes, the pre-v30 relay ceiling, pushed with OP_PUSHDATA1
-    pushdata2      300 bytes, so the push carries a two byte length
+    pushdata2      300 bytes, so the push carries a two-byte length
     multi_push     two pushes in one script rather than one
     empty          a bare OP_RETURN, pushing nothing
 
@@ -33,13 +33,9 @@ Throwaway keys only; none of this is signable into a broadcastable transaction.
 from embit.psbt import PSBT, OutputScope
 from embit.script import Script
 
-from common.psbt import build_psbt
+from common.psbt import (OP_PUSHDATA1, OP_PUSHDATA2, OP_PUSHDATA4,
+                         OP_PUSHDATA_MAX_DIRECT, OP_RETURN, _output_kind, build_psbt)
 
-OP_RETURN = 0x6a
-OP_PUSHDATA_MAX_DIRECT = 0x4b   # opcodes 0x01-0x4b are themselves the byte count
-OP_PUSHDATA1 = 0x4c
-OP_PUSHDATA2 = 0x4d
-OP_PUSHDATA4 = 0x4e
 OP_CHECKSIG = 0xac
 
 # The payload from the issue report, chosen because the damage is legible: the
@@ -47,7 +43,7 @@ OP_CHECKSIG = 0xac
 CHANCELLOR = b"Chancellor on the brink of third bailout"
 
 # Sats burned by the nonzero_value case. Deliberately large enough to be obvious
-# against the 100,000 sat inputs rather than lost in rounding.
+# against the 100,000-sat inputs rather than lost in rounding.
 BURNED_SATS = 10_000
 
 # A payload that is deliberately not valid UTF-8, so the screen takes its hex path.
@@ -78,7 +74,7 @@ def op_return_script(*payloads: bytes) -> Script:
     return Script(data)
 
 
-def _filler(length: int, seed: bytes = b"btc-datagen-op-return") -> bytes:
+def _filler(length: int) -> bytes:
     """`length` bytes of readable, deterministic filler.
 
     Readable rather than random so a tester can tell at a glance whether the
@@ -144,7 +140,11 @@ def build_op_return_psbt(kind: str, signers: list, script_type: str,
                       output_shape="change", threshold=threshold)
 
     # build_psbt's "change" shape is [external, change], so the change output is last.
+    # Checked rather than assumed: if that order ever changes, the burn would otherwise
+    # come out of the recipient's output and the blurbs' arithmetic would quietly break.
     change_output = psbt.outputs[-1]
+    if _output_kind(change_output) != "change":
+        raise ValueError("expected build_psbt to put the change output last")
 
     for script_pubkey, value in OP_RETURN_CASES[kind]():
         output = OutputScope()
