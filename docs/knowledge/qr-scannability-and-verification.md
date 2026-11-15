@@ -1,4 +1,4 @@
-# Making a rendered QR scannable — and verifying that it is
+# Making a rendered QR scannable, and verifying that it is
 
 Notes from building the demo site's "handmade" SeedQR, where the code is
 deliberately distressed (marker dabs, paper grain, worn print) and still has to
@@ -18,12 +18,11 @@ The render is a perfect, noise-free, high-resolution bitmap containing fine
 dotted hairlines and paper grit at full contrast. A camera never sees that: the
 lens defocuses slightly, the sensor integrates over a pixel area, and the capture
 is far coarser than a dpr-3 framebuffer. All of that is a low-pass filter, and
-for QR binarization low-pass is **helpful** — it averages grain and hairlines
+for QR binarization low-pass is **helpful**: it averages grain and hairlines
 away and leaves the module structure.
 
 So the gate is a *simulated capture*: downscale, blur slightly, lift brightness
-(SeedSigner runs auto-exposure high). See `camsim` in the session scratch or
-rebuild it — the shape is:
+(SeedSigner runs auto-exposure high). The shape is:
 
 ```python
 img.convert('L').resize((w, h), LANCZOS).filter(GaussianBlur(0.8..1.6))
@@ -66,8 +65,8 @@ If the pixel path changes, the harness has to follow it.
 
 ### "Everything fails" means the harness or a structural break
 
-When a parameter sweep shows *every* variant failing — including the known-good
-baseline — stop tuning the parameter. Either the harness is broken or something
+When a parameter sweep shows *every* variant failing (including the known-good
+baseline), stop tuning the parameter. Either the harness is broken or something
 structural (a leaked canvas clip, a hidden element) is destroying the symbol. A
 real parameter problem shows a *boundary*, not a wall.
 
@@ -93,7 +92,7 @@ which punch holes that binarize as light. Large grey specks decode; small white
 ones decode. Fine two-tone noise (like the paper grain) is the safe way to soften
 flat print.
 
-**Quiet zone can be tighter than the spec** in practice — 3 modules works here,
+**Quiet zone can be tighter than the spec** in practice: 3 modules works here,
 and the printed SeedSigner templates carry none at all, relying on surrounding
 paper. Treat any reduction as scanning-relevant and re-verify.
 
@@ -107,8 +106,8 @@ paper. Treat any reduction as scanning-relevant and re-verify.
   to the largest and centre the smaller ones, or the symbol resizes mid-scan and
   the camera re-hunts.
 - **Never rotate or CSS-filter the canvas.** Either resamples the bitmap and
-  destroys the whole-pixel module grid. Anything decorative — tint, grain,
-  creases, even the hand-written label — must be drawn *inside* the canvas;
+  destroys the whole-pixel module grid. Anything decorative (tint, grain,
+  creases, even the hand-written label) must be drawn *inside* the canvas;
   only the surrounding card may be styled in CSS.
 - **Upper-case UR/BBQR payloads** to reach QR alphanumeric mode (~45% denser),
   but **never** anything case-sensitive. Upper-casing a base58 address destroys
@@ -118,22 +117,20 @@ paper. Treat any reduction as scanning-relevant and re-verify.
 ## UR fountain playback
 
 The BC-UR multi-part encoder is **rateless**: parts 1..N are the pure fragments,
-everything after is an XOR of a pseudorandom subset, numbered N+1, N+2, … forever.
-A real encoder never returns to part 1.
+and everything after is an XOR of a pseudorandom subset, numbered N+1, N+2, …
+forever. A real encoder never returns to part 1.
 
-Two shortcuts are both wrong:
+Any finite list of frames gets this wrong:
 
-- shipping only the pure fragments and looping them gives a working animation
-  that **never exercises the fountain XOR-decode path** — the most intricate part
-  of any UR decoder;
-- shipping pure+mixed and cycling the whole list makes the animation jump back to
-  part 1, which no encoder does.
+- looping only the pure fragments gives a working animation that **never
+  exercises the fountain XOR-decode path**, the most intricate part of any UR
+  decoder;
+- cycling pure plus mixed parts jumps back to part 1, which no encoder does;
+- playing the pure set once and then looping a mixed tail still repeats the tail,
+  sequence numbers and all. It also makes the tail's size critical: a scanner that
+  missed a pure fragment only sees mixed parts afterwards, so a tail too small to
+  solve for the missing fragment never completes.
 
-Ship the pure set plus a mixed tail, play the prefix once, then loop *within the
-tail*. That makes the tail's size load-bearing: a scanner that missed a pure
-fragment only ever sees mixed parts afterwards, so a tail too small to solve for
-what was missed would spin forever rather than complete. Size it ~1:1 with the
-pure count.
-
-Remaining gap: the tail itself repeats, sequence numbers and all. Fixing it
-properly means a runtime encoder — see `docs/TODO.md`.
+So the site generates UR frames at runtime with the WASM build of cUR
+(`site/ssqr.js`). The frame index only climbs, and the encoder produces each part
+as it is needed.
