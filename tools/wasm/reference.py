@@ -6,8 +6,8 @@ ships rather than a fresh in-memory rebuild.
 Two independent bodies of reference data:
 
 **UR/QR cases.** Once the browser generates UR frames at runtime, the old
-guarantee — "Python pre-renders Sparrow-exact matrices, so there is no encoder
-in the browser to keep faithful" — is gone. These restore it as a checked
+guarantee ("Python pre-renders Sparrow-exact matrices, so there is no encoder
+in the browser to keep faithful") is gone. These restore it as a checked
 property: Python produces the UR parts and their QR versions for a sample of
 real transactions, and the test asserts the WASM module agrees. The fountain
 sequence is the delicate half; the mixed parts only match if cUR's Xoshiro256
@@ -16,8 +16,10 @@ thing that is either right or wildly wrong.
 
 **Signed-PSBT cases.** Real signatures produced by embit, plus the negative
 cases that give the positives meaning: unsigned, tampered (one bit flipped
-inside a signature), under-threshold, and a perfectly valid signature over the
-WRONG transaction. A verifier that cannot reject those is decoration.
+inside a signature), under-threshold, a perfectly valid signature over the
+WRONG transaction, and a perfectly valid signature made with a different nonce
+(which must verify but not match the build's reference signature). A verifier
+that cannot reject those is decoration.
 
 Run:  python -m tools.wasm.reference            (writes to the default path)
       python -m tools.wasm.reference --out X.json
@@ -31,13 +33,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import base64
 
-from embit import bip32, bip39
-from embit.networks import NETWORKS
+from embit import ec
 from embit.psbt import PSBT
 from embit.transaction import Witness
+from embit.util import secp256k1
 from urtypes.crypto import PSBT as URPSBT
 
 from common.fixtures import load_seeds
+from common.keys import root_key
 from common.qr import qr_matrix
 from common.ur2.ur import UR
 from common.ur2.ur_encoder import UREncoder
@@ -54,7 +57,7 @@ MIXED_TAIL = 24
 
 # Sequence numbers to spot-check far downstream. A demo left running reaches
 # five-digit sequence numbers, and that is also where the UR string grows a
-# character and can push the QR to the next version — so it is worth proving the
+# character and can push the QR to the next version, so it is worth proving the
 # two encoders still agree out there rather than only near the start.
 FAR_SEQ_NUMS = [500, 5000, 50000]
 
@@ -114,16 +117,11 @@ def build_case(scenario_id: str, raw: bytes, density: str, max_fragment: int) ->
 
 # One case per signing shape the verifier has a distinct code path for.
 SIGNING_SCENARIOS = [
-    "ss_native_segwit-change-3in",   # ECDSA, segwit — the common case
+    "ss_native_segwit-change-3in",   # ECDSA, segwit: the common case
     "ss_legacy-change-3in",          # ECDSA, legacy sighash
     "ss_taproot-change-3in",         # Schnorr, key-path, sig in the witness
     "2of3_p2wsh-change-3in",         # multiple signatures per input
 ]
-
-
-def root_key(mnemonic: str, network: str):
-    return bip32.HDKey.from_seed(bip39.mnemonic_to_seed(mnemonic),
-                                 version=NETWORKS[network]["xprv"])
 
 
 def sign_psbt(b64: str, mnemonics: list, network: str) -> str:
@@ -141,7 +139,7 @@ def tamper(b64: str) -> str:
     A verifier that only checks structure passes this happily, which is exactly
     why it is here: the negative cases are what prove the check can say no.
 
-    The bit is chosen inside the signature VALUE, never its framing — byte 10 of
+    The bit is chosen inside the signature VALUE, never its framing: byte 10 of
     a DER signature is inside `r` (the header is `30 <len> 02 20`), and byte 10
     of a Schnorr signature is inside `R`. So the result stays a well-formed,
     parseable signature that simply is not a signature over this transaction,
@@ -169,6 +167,43 @@ def tamper(b64: str) -> str:
     return psbt.to_string()
 
 
+def renonce(b64: str, mnemonic: str, network: str, sighash_hex: str) -> str:
+    """Re-sign the first input with the same key over the same digest, new nonce.
+
+    The result is a perfectly valid signature that is NOT the one the build
+    shipped as the reference, which is what a signer drawing its nonce some
+    other way would hand back (random aux data for Schnorr, which BIP 340
+    recommends; no low-R grinding, or a different nonce function, for ECDSA).
+    The verifier must accept it as valid and still report that it differs.
+
+    The extra nonce data is a constant no grinding counter reaches, so the
+    signature differs from embit's own every time, and stays reproducible.
+    """
+    psbt = PSBT.from_string(b64)
+    inp = psbt.inputs[0]
+    root = root_key(mnemonic, network)
+    digest = bytes.fromhex(sighash_hex)
+    extra = bytes([0x5A]) * 32
+
+    if inp.partial_sigs:
+        for pubkey, sig in inp.partial_sigs.items():
+            der = inp.bip32_derivations[pubkey]
+            if der.fingerprint != root.my_fingerprint:
+                continue
+            prv = root.derive(der.derivation).key
+            new = ec.Signature(secp256k1.ecdsa_sign(digest, prv.secret, None, extra))
+            inp.partial_sigs[pubkey] = new.serialize() + sig[-1:]
+            return psbt.to_string()
+    elif inp.final_scriptwitness is not None:
+        # Key-path spend: sign with the tweaked key, as embit's sign_with does.
+        _pub, (_leaves, der) = next(iter(inp.taproot_bip32_derivations.items()))
+        prv = root.derive(der.derivation).key.taproot_tweak(b"")
+        new = secp256k1.schnorrsig_sign(digest, prv.secret, None, extra)
+        inp.final_scriptwitness = Witness([new])
+        return psbt.to_string()
+    raise AssertionError("nothing signed by this seed to re-sign")
+
+
 def build_signing_cases(index: dict) -> list:
     seeds = load_seeds()
     by_id = {s["id"]: s for s in index["scenarios"]}
@@ -192,7 +227,7 @@ def build_signing_cases(index: dict) -> list:
         cases.append({"label": f"{scenario_id} signed", "verify": verify,
                       "psbt_base64": sign_psbt(b64, enough, network),
                       "expect": {"txMatches": True, "complete": True,
-                                 "anyInvalid": False},
+                                 "anyInvalid": False, "anyDifferent": False},
                       "expect_signers": cosigners[:threshold]})
 
         cases.append({"label": f"{scenario_id} unsigned", "verify": verify,
@@ -205,6 +240,14 @@ def build_signing_cases(index: dict) -> list:
                       "expect": {"txMatches": True, "complete": False,
                                  "anyInvalid": True}})
 
+        # Valid, complete, and still not what this device would have produced.
+        cases.append({"label": f"{scenario_id} different nonce", "verify": verify,
+                      "psbt_base64": renonce(sign_psbt(b64, enough, network),
+                                             enough[0], network,
+                                             verify["inputs"][0]["sighash"]),
+                      "expect": {"txMatches": True, "complete": True,
+                                 "anyInvalid": False, "anyDifferent": True}})
+
         if threshold > 1:
             cases.append({"label": f"{scenario_id} one of {threshold}",
                           "verify": verify,
@@ -214,7 +257,7 @@ def build_signing_cases(index: dict) -> list:
 
     # A correctly signed PSBT for a DIFFERENT transaction, checked against the
     # first scenario's expectations. Every signature in it is cryptographically
-    # valid — only the transaction is wrong — so this is the case that proves
+    # valid (only the transaction is wrong), so this is the case that proves
     # the unsigned-transaction comparison is doing real work rather than riding
     # along behind the signature check.
     if len(cases) >= 2:
@@ -251,7 +294,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.isdir(DIST):
-        sys.exit(f"{DIST} not found — run `python -m tools.build_site` first.")
+        sys.exit(f"{DIST} not found; run `python -m tools.build_site` first.")
 
     index = load_index()
     cases = []

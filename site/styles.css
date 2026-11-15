@@ -22,6 +22,13 @@
   --dire-bg: #fff0e6;
   --dire-line: #ff5700;
   --dire-text: #8f2f00;
+  /* The nonce check on a scanned-back signature: reassurance and alarm */
+  --ok-bg: #e9f7ef;
+  --ok-line: #2da44e;
+  --ok-text: #116329;
+  --bad-bg: #fdecea;
+  --bad-line: #d92d20;
+  --bad-text: #8a1c13;
   /* A faint fill, just enough to set a quiet pill off from the card behind it */
   --quiet-bg: #eef1f4;
   --radius: 12px;
@@ -45,6 +52,12 @@
     --dire-bg: #3d1a08;
     --dire-line: #ff6a1a;
     --dire-text: #ffb48a;
+    --ok-bg: #0f2a1a;
+    --ok-line: #3fb950;
+    --ok-text: #8ee6a6;
+    --bad-bg: #3a1210;
+    --bad-line: #f04438;
+    --bad-text: #ffb4ab;
     --quiet-bg: #252c35;
   }
 }
@@ -886,6 +899,26 @@ input[type="range"] { width: 100%; height: 40px; accent-color: var(--accent); }
 .scan-ok .scan-verdict-mark { color: #1a7f37; }
 .scan-bad .scan-verdict-mark { color: #b42318; }
 .scan-bad { border-color: var(--warn-line); }
+
+/* The nonce check. A signature that matches this page's own byte for byte gets
+   a green callout, because "this device is not hiding anything in its nonces" is
+   the reassurance someone vetting a device came for. One that verifies but does
+   NOT match takes over the whole result box in red: it is the signature of a
+   device choosing its own nonces, which is how a seed gets exfiltrated. */
+.nonce-check {
+  margin: 12px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ok-line);
+  border-radius: 8px;
+  background: var(--ok-bg);
+  color: var(--ok-text);
+}
+.nonce-check strong { display: block; font-size: 1rem; }
+.nonce-check p { margin: 4px 0 0; font-size: .9rem; }
+.scan-alarm { border: 2px solid var(--bad-line); background: var(--bad-bg); }
+.scan-alarm .scan-verdict-mark,
+.scan-alarm .scan-verdict strong,
+.scan-alarm .qr-note { color: var(--bad-text); }
 .scan-result .qr-note { margin-bottom: 0; }
 
 /* Transaction id under the verdict table.

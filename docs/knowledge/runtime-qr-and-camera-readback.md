@@ -15,8 +15,8 @@ subset, numbered N+1, N+2, … forever. A real encoder never repeats and never
 returns to part 1.
 
 Any finite list of frames therefore lies somewhere. Shipping only the pure
-fragments and looping them leaves the fountain XOR-decode path — the most
-intricate part of any UR decoder — completely unexercised. Shipping pure + a
+fragments and looping them leaves the fountain XOR-decode path (the most
+intricate part of any UR decoder) completely unexercised. Shipping pure + a
 mixed tail and cycling the whole thing jumps back to part 1, which no encoder
 does. Shipping pure + tail and looping *within the tail* (what this site did for
 a while) is closest, but the tail still repeats, sequence numbers and all, in
@@ -24,12 +24,12 @@ about 3.6 seconds on a small PSBT.
 
 The only faithful option is to run an encoder. cUR compiled to WASM is the same
 codec the ESP32 firmware runs, so the browser now produces frames byte-identical
-to a device's rather than merely equivalent — and the site ships a 53 KB base64
+to a device's rather than merely equivalent, and the site ships a 53 KB base64
 PSBT where it used to ship up to 296 KB of rendered matrices.
 
 ## What that costs: a second QR encoder to keep honest
 
-The old invariant was structural — "Python pre-renders Sparrow-exact matrices,
+The old invariant was structural: "Python pre-renders Sparrow-exact matrices,
 so there is no JS QR encoder to validate". Runtime encoding also means runtime
 rasterization, which means a second encoder (Nayuki's qrcodegen) that can drift
 from python-qrcode. Two findings:
@@ -51,7 +51,7 @@ choose different masks for roughly 40% of frames. Two independent causes:
   formulation.
 
 Both are defensible readings of the spec, and the mask is invisible to a
-decoder — same data, same version, same EC level, every mask decodes
+decoder: same data, same version, same EC level, every mask decodes
 identically. Chasing byte-equality would mean porting one library's quirks
 (including the test-mode blanking) into C to make two encoders agree on an
 arbitrary choice.
@@ -69,7 +69,7 @@ max. With an endless one you have to predict it.
 
 It turns out to be exact rather than statistical. Every fountain part carries
 the same fragment length, so the only thing that grows a part is the **sequence
-number** — as a decimal in the URI path, and as a CBOR integer inside the part
+number**, as a decimal in the URI path and as a CBOR integer inside the part
 (1 byte below 24, 2 below 256, 3 below 65536, 5 beyond). Rasterizing one real
 part at a six-digit sequence number gives the ceiling for any run shorter than
 55 hours at 5 fps. The front end keeps a runtime guard that re-layouts if a
@@ -89,8 +89,8 @@ Against a real SeedSigner it displayed nothing at all. The percentage climbed;
 not one cell ever lit.
 
 The reason is the same rateless property that motivated all of this. A device
-shows its pure fragments **once** — under a second at 5 fps for a small
-transaction — and then runs the fountain indefinitely. Unless the camera happens
+shows its pure fragments **once** (under a second at 5 fps for a small
+transaction) and then runs the fountain indefinitely. Unless the camera happens
 to acquire focus and lock within that first second, every frame you catch is a
 mixed one. The decoder recovers fragments steadily by XOR, and none of them was
 ever seen in pure form.
@@ -98,7 +98,7 @@ ever seen in pure form.
 The fix is to treat the cells as a **count meter** rather than a positional map:
 cell *i* lights when the decoder holds *i+1* fragments. A segmented bar is not
 read positionally, so nothing is claimed that isn't true, and the number that
-was actually interesting — how much was *reconstructed* rather than read — moved
+was actually interesting (how much was *reconstructed* rather than read) moved
 to the caption, where it is a good thing to point at during a demo.
 
 Two general lessons:
@@ -117,9 +117,9 @@ covers what:
 
 | gate | what it proves |
 |---|---|
-| `tools/verify.py` | the shipped *parameters* produce readable, correct frames — regenerated in Python, decoded with zbar (an independent decoder), reassembled to the exact PSBT. Also that the shipped sighash digests are the ones a real signature commits to. |
-| `tools/wasm/roundtrip_test.mjs` | the browser's encoder agrees with Python's, its output decodes at the right EC level and mode, and the signature verifier accepts valid signatures **and rejects** tampered, under-threshold, and wrong-transaction ones. |
-| `tools/smoke_site.mjs` | the camera path works end to end in a real browser, with a canvas MediaStream standing in for the camera, driven by the same encoder at the same 5 fps. |
+| `tools/verify.py` | the shipped *parameters* produce readable, correct frames: regenerated in Python, decoded with zbar (an independent decoder), reassembled to the exact PSBT. Also that the shipped sighash digests are the ones a real signature commits to, and that each shipped reference signature is attached to the key that produced it. |
+| `tools/wasm/roundtrip_test.mjs` | the browser's encoder agrees with Python's, its output decodes at the right EC level and mode, and the signature verifier accepts valid signatures **and rejects** tampered, under-threshold, and wrong-transaction ones. It also holds every honest signature byte-identical to the build's reference and flags a valid signature made with a different nonce (see `signature-nonce-check.md`). |
+| `tools/smoke_site.mjs` | the camera path works end to end in a real browser, with a canvas MediaStream standing in for the camera, driven by the same encoder at the same 5 fps, and the page shows the nonce check's reassurance for an honest signature and its alarm for a re-nonced one. |
 
 And, as always: **hardware is the only oracle that counts.** Every one of those
 passed while the progress bar sat empty on a phone.

@@ -1,6 +1,6 @@
 """End-to-end verification of the BUILT site in site/dist/.
 
-This checks the artifacts that actually ship, not a fresh in-memory rebuild —
+This checks the artifacts that actually ship, not a fresh in-memory rebuild,
 so a bug in the packing/serialization layer can't hide behind correct
 intermediate values. For each scenario it:
 
@@ -11,12 +11,14 @@ intermediate values. For each scenario it:
      the reconstructed PSBT is byte-identical to the scenario's PSBT;
   3. asserts the PSBT still signs with its intended seed;
   4. checks the shipped sighash digests are the ones a signature over this
-     transaction actually commits to, by signing and verifying against them;
+     transaction actually commits to, by signing and verifying against them,
+     and that the shipped reference signatures are the ones that signing
+     produced;
   5. parses it with **SeedSigner's own PSBTParser** and checks the policy and
      amounts match what the generator intended.
 
 BBQR frames ship pre-rendered and are read straight out of site/dist/. UR
-frames do not exist on disk any more — the browser generates them at runtime —
+frames do not exist on disk any more (the browser generates them at runtime),
 so step 1 regenerates them here from the PARAMETERS the site ships (the base64
 PSBT and the fragment size) and checks those. This half of the guarantee is
 "the parameters we ship produce readable, correct frames"; the other half, "the
@@ -43,13 +45,13 @@ import base64
 import numpy as np
 from PIL import Image
 from pyzbar.pyzbar import decode as zbar_decode
-from embit import bip32, bip39, ec
-from embit.networks import NETWORKS
+from embit import ec
 from embit.psbt import PSBT
 from urtypes.crypto import PSBT as URPSBT
 
 from common import bbqr
 from common.fixtures import load_seeds
+from common.keys import root_key
 from common.qr import qr_matrix
 from common.seedqr import standard_seedqr_digits, compact_seedqr_bytes
 from common.ur2.ur import UR
@@ -106,23 +108,25 @@ def reassemble(payloads: list, fmt: str) -> bytes:
     return bbqr.decode([p[:2] + p[2:4] + p[4:8].lower() + p[8:] for p in payloads])
 
 
-def root_key(mnemonic: str, network: str):
-    return bip32.HDKey.from_seed(bip39.mnemonic_to_seed(mnemonic),
-                                 version=NETWORKS[network]["xprv"])
-
-
 def verify_sighashes(data, seeds, entry) -> list:
     """Prove the shipped verification block describes this exact transaction.
 
-    site/psbt.js does no sighash construction of its own — it verifies a
+    site/psbt.js does no sighash construction of its own; it verifies a
     returned signature against the digest shipped here. That makes these digests
-    load-bearing in a way nothing else in the build is: a wrong one turns a
-    correct signature into a red cross on screen at a demo table, and there is
-    no second opinion in the browser to catch it.
+    critical in a way nothing else in the build is: a wrong one turns a correct
+    signature into a red cross on screen at a demo table, and there is no second
+    opinion in the browser to catch it.
 
     So: sign the PSBT for real, then verify each signature against the SHIPPED
     digest rather than against a freshly computed one. Recomputing would only
     prove embit agrees with itself.
+
+    The same signatures are compared with the shipped reference signatures,
+    which the browser holds a device's signature to byte for byte. That
+    comparison is embit against embit, so it cannot prove the nonce derivation
+    right; what it catches is the build attaching a reference to the wrong key
+    or input, which would show every honest scan as "not the expected
+    signature".
     """
     verify = data.get("verify")
     if not verify:
@@ -141,10 +145,11 @@ def verify_sighashes(data, seeds, entry) -> list:
 
     for i, inp in enumerate(psbt.inputs):
         digest = bytes.fromhex(verify["inputs"][i]["sighash"])
+        shipped = {k["pubkey"]: k.get("signature") for k in verify["inputs"][i]["keys"]}
         if verify["taproot"]:
             # Key-path spend: embit finalizes straight into the witness, and the
             # signature is checked against the tweaked output key from the
-            # scriptPubKey — not the internal key in the derivation fields.
+            # scriptPubKey, not the internal key in the derivation fields.
             witness = inp.final_scriptwitness
             if witness is None or not witness.items:
                 problems.append(f"input {i}: taproot input produced no witness")
@@ -152,6 +157,9 @@ def verify_sighashes(data, seeds, entry) -> list:
             key = ec.PublicKey.from_xonly(bytes.fromhex(verify["inputs"][i]["keys"][0]["pubkey"]))
             if not key.schnorr_verify(ec.SchnorrSig.parse(witness.items[0][:64]), digest):
                 problems.append(f"input {i}: shipped sighash does not match the schnorr signature")
+            if witness.items[0].hex() != shipped.get(key.xonly().hex()):
+                problems.append(f"input {i}: shipped reference signature is not the one "
+                                f"signing produced")
             continue
 
         if not inp.partial_sigs:
@@ -162,6 +170,9 @@ def verify_sighashes(data, seeds, entry) -> list:
             if not pubkey.verify(ec.Signature.parse(sig[:-1]), digest):
                 problems.append(f"input {i}: shipped sighash does not match the signature "
                                 f"from {pubkey.sec().hex()[:16]}")
+            if sig.hex() != shipped.get(pubkey.sec().hex()):
+                problems.append(f"input {i}: shipped reference signature for "
+                                f"{pubkey.sec().hex()[:16]} is not the one signing produced")
     return problems
 
 
@@ -170,7 +181,7 @@ def ur_frames(raw: bytes, ref: dict, full: bool) -> list:
 
     The site ships the fragment size, not the frames. Feeding that parameter
     back through the same encoder the build used is what makes this a check on
-    the shipped artifact rather than on a coincidence — get the fragment size
+    the shipped artifact rather than on a coincidence: get the fragment size
     wrong in the index and these frames stop reassembling.
 
     Runs one part past the pure set even in sampled mode: the last pure fragment
@@ -205,7 +216,7 @@ def verify_scenario(entry, seeds, full: bool, parser_cls, seed_cls, ss_network):
                 if ref["modules"] < max(f["m"] for f in frames):
                     problems.append(
                         f"{fmt}/{density}: shipped module ceiling {ref['modules']} is "
-                        f"below an actual frame ({max(f['m'] for f in frames)}) — the "
+                        f"below an actual frame ({max(f['m'] for f in frames)}); the "
                         f"canvas would clip the QR")
             else:
                 frames = load(ref["file"])["frames"]
@@ -273,7 +284,7 @@ def verify_wallet(entry):
             problems.append(f"descriptor QR does not decode to its ur:{ur_type}")
     for branch, items in data["addresses"].items():
         for item in items:
-            # Addresses must survive VERBATIM — upper-casing would destroy a
+            # Addresses must survive VERBATIM: upper-casing would destroy a
             # base58 address, so this asserts exact case.
             decoded = decode_frame(item["qr"]["frames"][0])
             if decoded != item["address"]:
@@ -307,7 +318,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.isdir(DIST):
-        sys.exit(f"{DIST} not found — run `python -m tools.build_site` first.")
+        sys.exit(f"{DIST} not found; run `python -m tools.build_site` first.")
 
     index = load("data/index.json")
     seeds = load_seeds()
@@ -352,7 +363,7 @@ def main():
             failures += 1
             print(f"        - {p}")
 
-    print(f"\n{'PASS — no problems found' if not failures else f'FAILED — {failures} problem(s)'}")
+    print(f"\n{'PASS: no problems found' if not failures else f'FAILED: {failures} problem(s)'}")
     return 1 if failures else 0
 
 

@@ -2,7 +2,7 @@
 
 Seeds are plain BIP39 mnemonics built from deterministic but high-quality
 entropy (SHA256 of a domain-separated name; see tools/build_fixtures.py), so they
-are fully reproducible AND look like real random seeds — yet can still be typed
+are fully reproducible AND look like real random seeds, yet can still be typed
 into / scanned by SeedSigner by hand. NEVER put real bitcoin on anything here.
 """
 from dataclasses import dataclass
@@ -17,6 +17,12 @@ from urtypes.crypto import HDKey, Keypath, PathComponent, CoinInfo
 
 def mnemonic_from_entropy(entropy: bytes) -> str:
     return bip39.mnemonic_from_bytes(entropy)
+
+
+def root_key(mnemonic: str, network: str) -> bip32.HDKey:
+    """The private root key a device derives from this mnemonic (no passphrase)."""
+    return bip32.HDKey.from_seed(bip39.mnemonic_to_seed(mnemonic),
+                                 version=NETWORKS[network]["xprv"])
 
 
 def _path_components(path: str) -> list:

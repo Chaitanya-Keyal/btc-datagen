@@ -42,12 +42,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from embit.psbt import SIGHASH
+from embit.psbt import PSBT, SIGHASH
 from urtypes.crypto import PSBT as URPSBT
 
 from common import bbqr, scenarios as scenario_defs, script_types
 from common.attack_psbt import build_test_psbt
 from common.fixtures import load_seeds, load_wallets, wallet_cosigners
+from common.keys import root_key
 from common.psbt import build_psbt, summarize
 from common.qr import qr_matrix, qr_matrix_bytes
 from common.seedqr import standard_seedqr_digits, compact_seedqr_bytes
@@ -230,6 +231,38 @@ def bytes_qr(payload: bytes) -> dict:
 
 # --- verification data for the scan-back step --------------------------------
 
+def reference_signatures(psbt, signers: list) -> list:
+    """Per input, {pubkey hex: signature hex} exactly as each signer's seed signs it.
+
+    Uses the same call SeedSigner makes, embit's sign_with with its default
+    sighash, on a fresh copy of the PSBT per signer. That makes the result a
+    prediction of the device's bytes, not merely a valid signature: embit signs
+    ECDSA with RFC 6979 nonces, grinds for a low R by retrying with a counter as
+    extra nonce data, and signs Schnorr with no auxiliary randomness, so a given
+    key and sighash always produce the same signature.
+
+    The value is what the device writes into the PSBT: an ECDSA partial
+    signature in DER with its sighash byte, or a taproot key-path signature
+    (64 bytes, plus a flag byte only when the sighash is not DEFAULT). The key
+    matches the "pubkey" verification_data uses for that input.
+    """
+    expected = [dict() for _ in psbt.inputs]
+    for signer in signers:
+        copy = PSBT.parse(psbt.serialize())
+        copy.sign_with(root_key(signer.mnemonic, signer.network))
+        for i, inp in enumerate(copy.inputs):
+            if inp.is_taproot:
+                # embit finalizes a key-path spend straight into the witness.
+                witness = inp.final_scriptwitness
+                if witness is not None and witness.items:
+                    xonly = inp.utxo.script_pubkey.data[2:34]
+                    expected[i][xonly.hex()] = witness.items[0].hex()
+            else:
+                for pubkey, sig in inp.partial_sigs.items():
+                    expected[i][pubkey.sec().hex()] = sig.hex()
+    return expected
+
+
 def verification_data(psbt, signers: list, threshold: int) -> dict:
     """Everything the browser needs to check a signature the device hands back.
 
@@ -250,10 +283,15 @@ def verification_data(psbt, signers: list, threshold: int) -> dict:
     Taproot key-path spends verify against the TWEAKED output key sitting in the
     scriptPubKey, not the internal key in the PSBT's derivation fields, so the
     x-only key is pulled straight out of the script.
+
+    Each key also carries the exact signature its seed produces (see
+    reference_signatures), so the browser can go one step past "valid" and check
+    that the device's signature is byte-identical to the one computed here.
     """
     by_fingerprint = {s.fingerprint: s.name for s in signers}
     taproot = psbt.inputs[0].is_taproot
     sighash_type = SIGHASH.DEFAULT if taproot else SIGHASH.ALL
+    expected_sigs = reference_signatures(psbt, signers)
 
     inputs = []
     for i, inp in enumerate(psbt.inputs):
@@ -269,6 +307,8 @@ def verification_data(psbt, signers: list, threshold: int) -> dict:
                      "fingerprint": der.fingerprint.hex(),
                      "seed": by_fingerprint.get(der.fingerprint.hex(), "?")}
                     for pk, der in inp.bip32_derivations.items()]
+        for key in keys:
+            key["signature"] = expected_sigs[i].get(key["pubkey"])
         inputs.append({"sighash": psbt.sighash(i, sighash=sighash_type).hex(),
                        "keys": keys})
 

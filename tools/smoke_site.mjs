@@ -1,7 +1,7 @@
 /* Headless-browser smoke test for the demo site.
  *
  * tools/verify.py proves the DATA is correct. This proves the PAGE actually
- * renders it — which is a genuinely different failure mode. Both bugs it caught
+ * renders it, which is a genuinely different failure mode. Both bugs it caught
  * on first run were invisible to code review and to any data-level check:
  *
  *   1. `.fs`/`.sheet`/`.chooser` declare `display: flex`, and an author-origin
@@ -84,8 +84,8 @@ async function checkCanvas(page, where, id, label) {
  * The camera is replaced by a canvas MediaStream, driven from inside the page
  * by the SAME WASM encoder the transaction QRs use. So the test plays a real
  * animated ur:crypto-psbt of a real signed PSBT at the real 5 fps, and every
- * link after getUserMedia — video element, downscale, grayscale conversion,
- * k_quirc, cUR's fountain decoder, the PSBT parser, secp256k1 — is the shipping
+ * link after getUserMedia (video element, downscale, grayscale conversion,
+ * k_quirc, cUR's fountain decoder, the PSBT parser, secp256k1) is the shipping
  * code.
  *
  * A fake video DEVICE (--use-file-for-fake-video-capture with a Y4M) was the
@@ -99,9 +99,13 @@ async function checkCanvas(page, where, id, label) {
  *   a different tx    -> "that is a different transaction"
  */
 const SCAN_CASES = [
-  ['signed', /signature is real/i],
+  // Valid AND byte-identical to the build's own signature: the nonce check's
+  // reassurance must show, not just the verdict.
+  ['signed', /signature is real.*exact match/i],
   ['unsigned', /not signed yet/i],
   ['different transaction', /different transaction/i],
+  // Valid, but made with another nonce: the nonce check's alarm.
+  ['different nonce', /signature mismatch/i],
 ];
 
 /* Playing one PSBT into the fake camera as a live UR fountain. Installed on the
@@ -145,7 +149,7 @@ function playIntoFakeCamera(page, b64) {
 /* A 2-of-3 completed one cosigner at a time, which is how it actually happens:
  * each scan carries only the signature the device just made, so the page has to
  * accumulate them the way a coordinator combines PSBTs. Judged per scan, this
- * transaction can never reach "complete" — which is the whole thing a multisig
+ * transaction can never reach "complete", which is the whole thing a multisig
  * demo exists to show.
  *
  * Also checks that re-reading the SAME cosigner is recognised rather than
@@ -178,16 +182,16 @@ async function runMultisigScanCheck(browser, ctx, cases) {
 
   const first = await scan(alice.psbt_base64);
   if (!/partly signed/i.test(first)) {
-    fail(where, `multisig: one cosigner should read as partly signed — got "${first.slice(0, 120)}"`);
+    fail(where, `multisig: one cosigner should read as partly signed; got "${first.slice(0, 120)}"`);
   }
   // Feeding the identical PSBT again must not inflate the count.
   const repeat = await scan(alice.psbt_base64);
   if (!/already counted/i.test(repeat)) {
-    fail(where, `multisig: re-scanning one cosigner should say so — got "${repeat.slice(0, 120)}"`);
+    fail(where, `multisig: re-scanning one cosigner should say so; got "${repeat.slice(0, 120)}"`);
   }
   const second = await scan(both.psbt_base64);
   if (!/signature is real/i.test(second)) {
-    fail(where, `multisig: the threshold should complete across scans — got "${second.slice(0, 160)}"`);
+    fail(where, `multisig: the threshold should complete across scans; got "${second.slice(0, 160)}"`);
   } else {
     console.log(`  scan ${'multisig, collected'.padEnd(22)} -> ${second.split('  ')[0].slice(0, 60)}`);
   }
@@ -203,7 +207,7 @@ async function runScanChecks(browser) {
   try {
     fixtures = JSON.parse(readFileSync('tools/wasm/reference.json', 'utf8'));
   } catch (e) {
-    fail(where, `tools/wasm/reference.json is missing (${e.message}) — `
+    fail(where, `tools/wasm/reference.json is missing (${e.message}); `
       + 'run `python -m tools.wasm.reference` first');
     return;
   }
@@ -211,8 +215,11 @@ async function runScanChecks(browser) {
   const signed = (fixtures.signing || []).find((c) => /native_segwit.* signed$/.test(c.label));
   const unsigned = (fixtures.signing || []).find((c) => /native_segwit.* unsigned$/.test(c.label));
   const otherTx = (fixtures.signing || []).find((c) => /legacy.* signed$/.test(c.label));
-  if (!signed || !unsigned || !otherTx) {
-    fail(where, 'reference.json has no signed/unsigned native-segwit pair to scan');
+  const renonced = (fixtures.signing || [])
+    .find((c) => /native_segwit.* different nonce$/.test(c.label));
+  if (!signed || !unsigned || !otherTx || !renonced) {
+    fail(where, 'reference.json is missing a native-segwit signed, unsigned, or '
+      + 'different-nonce case to scan');
     return;
   }
   const scenarioId = signed.label.split(' ')[0];
@@ -220,6 +227,7 @@ async function runScanChecks(browser) {
     'signed': signed.psbt_base64,
     'unsigned': unsigned.psbt_base64,
     'different transaction': otherTx.psbt_base64,
+    'different nonce': renonced.psbt_base64,
   };
 
   const ctx = await browser.newContext({
@@ -229,7 +237,7 @@ async function runScanChecks(browser) {
 
   // Stand in for the camera BEFORE any page script runs. captureStream only
   // emits a frame when the canvas is painted, so the animation's own 5 fps
-  // paces the stream — exactly as a real camera watching a device would.
+  // paces the stream, exactly as a real camera watching a device would.
   await ctx.addInitScript(() => {
     window.__fakeCam = document.createElement('canvas');
     window.__fakeCam.width = 640;
@@ -255,7 +263,7 @@ async function runScanChecks(browser) {
 
     await page.click('#scan-start');
 
-    // Progress must actually move before the result lands — otherwise a
+    // Progress must actually move before the result lands; otherwise a
     // verifier that somehow got the PSBT by another route would pass this.
     await page.waitForFunction(
       () => document.querySelectorAll('#scan-cells .scan-cell.is-read').length > 0,
@@ -268,7 +276,7 @@ async function runScanChecks(browser) {
     const verdict = ((await page.textContent('#scan-result').catch(() => '')) || '')
       .replace(/\s+/g, ' ').trim();
     if (!expected.test(verdict)) {
-      fail(where, `${label}: verdict did not match ${expected} — got "${verdict.slice(0, 140)}"`);
+      fail(where, `${label}: verdict did not match ${expected}; got "${verdict.slice(0, 140)}"`);
     } else {
       console.log(`  scan ${label.padEnd(22)} -> ${verdict.split('  ')[0].slice(0, 60)}`);
     }
@@ -375,7 +383,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
   await page.waitForTimeout(500);
   if ((await page.textContent('#qr-progress')) !== paused) fail(name, 'pause did not stop playback');
 
-  // Once a UR animation reaches the fountain parts it must STAY there — a real
+  // Once a UR animation reaches the fountain parts it must STAY there: a real
   // encoder never returns to the pure prefix.
   //
   // Rewind to frame 0 first: by this point free playback has already run past
@@ -394,7 +402,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
   const pureHits = seen.filter((s) => /^Part \d+ of/.test(s));
   const uniquePure = new Set(pureHits);
   if (pureHits.length === 0) {
-    fail(name, 'stepped 45 frames from the start without seeing one pure part — '
+    fail(name, 'stepped 45 frames from the start without seeing one pure part; '
       + 'the fountain assertion would be vacuous');
   } else if (pureHits.length !== uniquePure.size) {
     fail(name, 'animation looped back to the pure fragments '
@@ -469,7 +477,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
     if (!(await page.isHidden('#view-sign'))) fail(name, `signing view still visible in ${goto}`);
 
     // A SeedQR starts behind a closed vault and opens on demand. Scope to the
-    // visible view — both seed surfaces have a .fold-open button, and the one
+    // visible view: both seed surfaces have a .fold-open button, and the one
     // in the hidden signing view would otherwise be matched first.
     const fold = page.locator(`${view} .fold`).first();
     if (await fold.count()) {
@@ -492,7 +500,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
       // Tapping the revealed sheet folds it away again. The gesture lands on the
       // stage, not the card: the card is permanently visibility:hidden (the
       // stand-in faces are what's on screen), and hidden elements take no
-      // pointer events. This also guards the opposite bug — a toggle placed on
+      // pointer events. This also guards the opposite bug: a toggle placed on
       // .fold would catch the very click that unfolded it and re-fold it, so the
       // sheet would never appear open at all.
       await page.click(`${view} .fold-stage`, { position: { x: 60, y: 40 } });
@@ -539,7 +547,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
   // Step 2 exists for both policies, but is a different thing: a single-sig
   // address is derived from the seed, a multisig one only means something
   // against the wallet policy. Each must be present for its own case and absent
-  // for the other — checking only one direction would pass with both shown.
+  // for the other; checking only one direction would pass with both shown.
   if (single) {
     await page.selectOption('#verify-wallet', single.value);
     await page.waitForTimeout(600);
@@ -596,12 +604,12 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
   // --- the browser's Back button --------------------------------------------
   //
   // On a phone Back is the primary way out of anything, and every view change
-  // used replaceState — so the history stack stayed one entry deep and Back
+  // used replaceState, so the history stack stayed one entry deep and Back
   // from inside the signing flow left the site entirely. That reads as a crash,
   // not as navigation.
   // The root URL must stay clean. A default transaction is preloaded so the
   // signing view opens instantly, and it used to announce itself by rewriting
-  // the URL to ?tx=<default> while the landing page was still showing — so a
+  // the URL to ?tx=<default> while the landing page was still showing, so a
   // refresh landed on the signing view, and the history entry the user started
   // from no longer described the page they started on. That makes Back
   // unfixable in principle, not merely broken.
@@ -609,7 +617,7 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
   await page.waitForTimeout(400);
   const homeUrl = new URL(page.url());
   if (homeUrl.search !== '') {
-    fail(name, `landing page rewrote the URL to "${homeUrl.search}" — a refresh `
+    fail(name, `landing page rewrote the URL to "${homeUrl.search}"; a refresh `
       + 'here would not come back to the landing page');
   }
   await page.reload({ waitUntil: 'networkidle' });
@@ -669,4 +677,4 @@ if (problems.length) {
   console.log('\nPROBLEMS:\n - ' + problems.join('\n - '));
   process.exit(1);
 }
-console.log('\nPASS — no problems found.');
+console.log('\nPASS: no problems found.');

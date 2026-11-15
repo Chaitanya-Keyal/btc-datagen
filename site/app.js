@@ -1286,7 +1286,7 @@ async function onScanComplete(psbtBytes) {
   $('scan-result').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function scanResultBox(cls, mark, headline, detail, rows, footer, again) {
+function scanResultBox(cls, mark, headline, detail, rows, footer, again, callout = '') {
   const box = $('scan-result');
   box.className = `scan-result ${cls}`;
   box.innerHTML = `
@@ -1295,6 +1295,7 @@ function scanResultBox(cls, mark, headline, detail, rows, footer, again) {
       <strong>${headline}</strong>
     </div>
     <p class="qr-note">${detail}</p>
+    ${callout}
     ${rows ? `<table class="kv">${rows}</table>` : ''}
     ${footer || ''}
     <button id="scan-again" class="btn btn-block" style="margin-top:12px">${again}</button>`;
@@ -1323,9 +1324,21 @@ function renderScanResult(report) {
   const threshold = report.inputs.length ? report.inputs[0].needed : 1;
   const enough = report.txMatches && report.inputs.every((i) => have[i.index] >= i.needed);
 
+  // Every collected signature is valid; these count how many could be compared
+  // with the one this page's build made from the same key, and how many came out
+  // different. This is the nonce check people vet a device with: a correct
+  // SeedSigner derives its nonce from the key and the transaction alone, so its
+  // signature is predictable to the byte. A valid signature with any other nonce
+  // is what a device leaking its seed through its nonces (Dark Skippy) produces.
   const seeds = new Set();
+  let compared = 0;
+  let differ = 0;
   for (const perInput of collected.inputs) {
-    for (const sig of perInput.values()) if (sig.seed) seeds.add(sig.seed);
+    for (const sig of perInput.values()) {
+      if (sig.seed) seeds.add(sig.seed);
+      if (sig.identical !== null && sig.identical !== undefined) compared++;
+      if (sig.identical === false) differ++;
+    }
   }
   const who = nameList([...seeds]);
 
@@ -1338,6 +1351,18 @@ function renderScanResult(report) {
     mark = '✗';
     headline = 'That is a different transaction';
     detail = 'The device returned a transaction that is not the one shown above.';
+  } else if (differ > 0) {
+    // Ahead of everything but a wrong transaction, and sticky across scans:
+    // these signatures verify, so the transaction would broadcast fine, which is
+    // exactly why a nonce leak goes unnoticed. The counts below still say how far
+    // the signing got; the verdict is about the device.
+    cls = 'scan-bad scan-alarm';
+    mark = '✗';
+    headline = 'Signature mismatch';
+    detail = `${differ === 1 ? 'One signature is' : `${differ} signatures are`} valid,
+      but not what a correct SeedSigner makes with this key. A device that picks
+      its own nonces can leak its seed through them (the Dark Skippy attack). Do
+      not use this device with real funds until you know why.`;
   } else if (report.anyInvalid) {
     cls = 'scan-bad';
     mark = '✗';
@@ -1390,6 +1415,21 @@ function renderScanResult(report) {
       ? `<tr><th>Still needed</th><td class="num">${needed - valid}</td></tr>`
       : ''}`;
 
+  // The reassurance half of the nonce check, as prominent as the alarm half.
+  // Not a count: valid signatures are capped at the threshold while this covers
+  // every signature collected, and two counts that disagree for a 2-of-3 signed
+  // by all three cosigners would undercut the one thing it is here to say.
+  const exact = report.txMatches && !report.anyInvalid && compared > 0 && differ === 0;
+  const callout = exact
+    ? `<div class="nonce-check">
+         <strong>✓ Exact match</strong>
+         <p>${compared === 1 ? 'Identical' : 'Every signature is identical'} to the one
+           this page computed with the same key. The device's nonce came from the
+           key and the transaction alone, so nothing is hidden in
+           ${compared === 1 ? 'it' : 'them'}.</p>
+       </div>`
+    : '';
+
   // The transaction id sits OUTSIDE the table. In it, the numeric column asks to
   // be as narrow as its content while a 64-character txid asks for everything
   // going, the auto table layout splits the difference and wraps the id into a
@@ -1397,7 +1437,7 @@ function renderScanResult(report) {
   // handles both a short right-aligned number and a long identifier.
   const footer = `<p class="scan-txid"><span>Transaction</span>${truncatedAddr(report.txid)}</p>`;
 
-  scanResultBox(cls, mark, headline, detail, rows, footer, 'Scan again');
+  scanResultBox(cls, mark, headline, detail, rows, footer, 'Scan again', callout);
 }
 
 function showScanError(message) {

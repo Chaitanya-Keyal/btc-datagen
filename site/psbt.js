@@ -1,6 +1,6 @@
 /* Read the PSBT a SeedSigner hands back, and check that its signatures are real.
  *
- * Scope on purpose: this parses only enough PSBT to answer one question — "did
+ * Scope on purpose: this parses only enough PSBT to answer one question: "did
  * this device produce valid signatures over the transaction this page sent?" It
  * is not a general PSBT library and should not grow into one.
  *
@@ -10,16 +10,27 @@
  *   1. the returned PSBT's global unsigned transaction is BYTE-IDENTICAL to the
  *      one we sent (so the device did not sign some other transaction), and
  *   2. each signature verifies, on the secp256k1 curve, against the sighash
- *      digest for that input — a digest computed at build time by embit and
+ *      digest for that input, a digest computed at build time by embit and
  *      shipped alongside the scenario (see verification_data in
  *      tools/build_site.py).
  *
  * The digest is precomputed rather than derived in the browser because deriving
  * it means implementing BIP143, BIP341 and the legacy algorithm in JavaScript:
  * three chances to be subtly wrong in the one place where being subtly wrong
- * shows a confident green tick. Check (1) is what keeps (2) honest — a
+ * shows a confident green tick. Check (1) is what keeps (2) honest: a
  * signature over our digest is only interesting because the transaction the
  * digest describes is provably the one that came back.
+ *
+ * Past "valid", one more comparison, and for vetting a device it is the one that
+ * matters: each valid signature is checked against the signature this page's
+ * build made with the same throwaway key over the same digest
+ * (reference_signatures in tools/build_site.py). A correct SeedSigner derives
+ * its nonce from the key and the digest alone, so the two must be
+ * byte-identical. A signature that verifies but differs came from some other
+ * nonce, and a nonce the device chooses for itself is the channel a malicious
+ * signer leaks its seed through (the Dark Skippy attack). The transaction it
+ * signs is still perfectly valid, which is exactly why only this comparison
+ * can catch it.
  */
 import * as secp from './vendor/noble-secp256k1.js';
 
@@ -92,7 +103,7 @@ function readMap(r) {
  *
  * A PSBT's global transaction is serialized WITHOUT witnesses, so there is no
  * segwit marker/flag to skip: 4-byte version, then the input count. That is all
- * this needs — the input maps that follow are counted, not the transaction. */
+ * this needs; the input maps that follow are counted, not the transaction. */
 function inputCount(txBytes) {
   const r = new Reader(txBytes);
   r.take(4);
@@ -199,7 +210,8 @@ async function checkInput(inp, expected, taproot) {
       valid = await secp.schnorr.verifyAsync(sig, bytesFromHex(expected.sighash),
                                              bytesFromHex(key.pubkey));
     }
-    results.push({ ...key, valid, note, scheme: 'schnorr' });
+    results.push({ ...key, valid, note, scheme: 'schnorr',
+                   identical: sameAsReference(inp.tapKeySig, key) });
     return results;
   }
 
@@ -223,14 +235,24 @@ async function checkInput(inp, expected, taproot) {
         note = e.message;
       }
     }
-    results.push({ ...key, valid, note, scheme: 'ecdsa' });
+    results.push({ ...key, valid, note, scheme: 'ecdsa',
+                   identical: sameAsReference(sigBytes, key) });
   }
   return results;
 }
 
+/* Whether a signature is byte-for-byte the one this page's build made with the
+ * same key, sighash byte included. null when there is nothing to compare
+ * against: a key outside the wallet, or scenario data built before reference
+ * signatures shipped. */
+function sameAsReference(sigBytes, key) {
+  if (!key.signature) return null;
+  return hex(sigBytes) === key.signature;
+}
+
 /* Verify a scanned PSBT against a scenario's shipped `verify` block.
  *
- * Never throws for a *failed* check — a wrong or unsigned PSBT is a result, not
+ * Never throws for a *failed* check: a wrong or unsigned PSBT is a result, not
  * an exception. It does throw if the bytes are not a PSBT at all. */
 export async function verifySignedPsbt(psbtBytes, expected) {
   const parsed = parsePsbt(psbtBytes);
@@ -261,6 +283,9 @@ export async function verifySignedPsbt(psbtBytes, expected) {
   const everyInputSatisfied = inputs.length > 0
     && inputs.every((inp) => inp.valid >= inp.needed);
   const anyInvalid = inputs.some((inp) => inp.sigs.some((s) => !s.valid));
+  // Valid, but not the bytes this page's build produced with the same key.
+  const anyDifferent = inputs.some((inp) =>
+    inp.sigs.some((s) => s.valid && s.identical === false));
 
   return {
     txid,
@@ -274,5 +299,6 @@ export async function verifySignedPsbt(psbtBytes, expected) {
     partial: txMatches && !everyInputSatisfied
       && inputs.some((inp) => inp.valid > 0) && !anyInvalid,
     anyInvalid,
+    anyDifferent,
   };
 }

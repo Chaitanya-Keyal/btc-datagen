@@ -1,6 +1,6 @@
 # btc-datagen
 
-A generator for **Bitcoin test data** — QR codes and PSBTs — used to exercise
+A generator for **Bitcoin test data** (QR codes and PSBTs) used to exercise
 scanners and signing flows such as SeedSigner's QR operations, plus a static
 **demo site** that serves those QRs to a phone so someone can drive a real
 SeedSigner hands-on.
@@ -16,10 +16,10 @@ Two jobs:
    produce. The first target is **Sparrow Wallet**, because much of the user base
    drives SeedSigner from Sparrow. Sparrow has no scriptable CLI (its terminal
    mode is an interactive TUI), so instead of automating Sparrow we **replicate
-   its exact QR output format** — verified against the Sparrow source. See
+   its exact QR output format**, verified against the Sparrow source. See
    [docs/knowledge/sparrow-qr-formats.md](docs/knowledge/sparrow-qr-formats.md).
 2. **A demo site.** At a conference table you want to hand someone a URL, not a
-   laptop — and they may only have the device in their hands for twenty seconds.
+   laptop, and they may only have the device in their hands for twenty seconds.
    The site is four big buttons and QRs sized to be scanned off a phone screen.
 
 Nothing here is broadcastable. Inputs reference synthetic funding transactions
@@ -50,7 +50,7 @@ site/                 the demo site's source
   psbt.js             minimal PSBT reader + signature verification
   scan.js             camera capture -> QR decode -> UR reassembly
   vendor/             gitignored: built ssqr.{js,wasm} + @noble/secp256k1
-site/dist/            built site — gitignored, produced by tools/build_site.py
+site/dist/            built site; gitignored, produced by tools/build_site.py
 deps/                 gitignored: cUR, k_quirc, qrcodegen at pinned commits
 tools/
   build_fixtures.py   (re)generate fixtures deterministically
@@ -121,14 +121,14 @@ Someone at a demo table may have the device in their hands for twenty seconds, s
 the site is built for one glance and one tap. The landing page is a warning line
 and four buttons, nothing else:
 
-- **Sign a transaction** — the main event. One scrolling page: *Scan the
+- **Sign a transaction**: the main event. One scrolling page: *Scan the
   transaction* (QR first, right under the banner), then *Load the seed*, then for
   multisig *Load the wallet descriptor*. Numbered headings and hard dividers mark
   the sections; there are no next-step buttons, because those were only
   re-implementing the scrollbar.
-- **Load a seed** — the SeedQRs on their own, CompactSeedQR by default.
-- **Verify an address** — a descriptor plus an address to check against it.
-- **Sign a message** — `signmessage {path} ascii:{message}`.
+- **Load a seed**: the SeedQRs on their own, CompactSeedQR by default.
+- **Verify an address**: a descriptor plus an address to check against it.
+- **Sign a message**: `signmessage {path} ascii:{message}`.
 
 Every optional control (format, density, speed, pause, UR type) is folded into a
 collapsed *QR options* disclosure. The defaults are what a demo wants; the knobs
@@ -136,7 +136,7 @@ are there for when something won't scan.
 
 The wallet-descriptor step belongs to **signing**, not address verification, and
 the distinction is easy to get wrong: during signing the device verifies its own
-change **on board** — it needs the wallet policy to recognise a change output,
+change **on board**: it needs the wallet policy to recognise a change output,
 and you never scan an address at it. *Verify Address* is a separate device tool,
 so it gets a separate view.
 
@@ -151,8 +151,8 @@ packs less in and is easier to scan. Density is sticky per format:
 | | Default |
 |---|---|
 | Format | UR (`ur:crypto-psbt`) |
-| UR density | Normal — 400-byte fragments |
-| BBQR density | Low — 1000-char parts (BBQR Normal lands around v27, too dense to default to) |
+| UR density | Normal (400-byte fragments) |
+| BBQR density | Low (1000-char parts; BBQR Normal lands around v27, too dense to default to) |
 | Frame rate | 5 fps, adjustable 0.5–10 |
 | SeedQR type | CompactSeedQR |
 
@@ -163,7 +163,7 @@ The BC-UR multi-part encoder is **rateless**. The first `seq_len` parts are the
 Everything after that is a *mixed* part: an XOR of a pseudorandomly chosen
 fragment subset, numbered N+1, N+2, … forever. Sparrow just keeps calling
 `nextPart()`, so a real animation runs 1..N and then **stays in fountain mode
-indefinitely — it never returns to part 1**.
+indefinitely; it never returns to part 1**.
 
 No finite list of frames can be that, which is why the browser runs the encoder
 itself: **cUR compiled to WASM**, the same codec the ESP32 firmware runs, so the
@@ -175,8 +175,8 @@ parts on demand and the frame counter distinguishes `Part 3 of 7` from
 It is also much smaller: the 100-input stress case went from ~296 KB of
 pre-rendered matrices to a ~53 KB PSBT.
 
-BBQR has no fountain coding — it really is a fixed set of slices that a sender
-loops — so BBQR frames are still pre-rendered by Python, and that case wraps
+BBQR has no fountain coding (it really is a fixed set of slices that a sender
+loops), so BBQR frames are still pre-rendered by Python, and that case wraps
 normally.
 
 The trade is that there is now a second QR encoder (Nayuki's qrcodegen) that can
@@ -190,17 +190,30 @@ different QR masks and why that is fine.
 The last step of the signing flow closes the loop: point the phone's camera at
 the SeedSigner's screen, read the signed transaction back, and check it.
 
-- **QR decode** is k_quirc — SeedSigner's own decoder, compiled to WASM — so the
+- **QR decode** is k_quirc, SeedSigner's own decoder compiled to WASM, so the
   browser reads the device's screen with the device's code.
 - **Reassembly** is cUR's fountain decoder, with a live per-fragment meter.
 - **Verification** parses the returned PSBT, asserts its unsigned transaction is
   byte-identical to the one this page sent, and verifies every signature on the
   secp256k1 curve (`@noble/secp256k1`) against a sighash digest computed at
   build time by embit.
+- **The nonce check** compares every valid signature, byte for byte, with the
+  one the build made by signing the same transaction with the same throwaway key
+  (embit's `sign_with`, the same call SeedSigner makes).
 
-That last point shapes what the check means, and the UI says so: it proves the
-device signed *this* transaction. A signature over anything else — a different
-amount, a different recipient — does not verify against this digest.
+Verification shapes what the check means, and the UI says so: it proves the
+device signed *this* transaction. A signature over anything else (a different
+amount, a different recipient) does not verify against this digest.
+
+The nonce check is what makes the page useful for vetting a device. SeedSigner
+derives each signing nonce from the key and the transaction alone, so its
+signatures are predictable to the byte. A signature that verifies but differs
+came from a nonce the device chose some other way, and that is the channel a
+malicious signer uses to leak its seed (the Dark Skippy attack). The page calls
+out a match as a reassurance and a mismatch as an alarm. See
+[docs/knowledge/signature-nonce-check.md](docs/knowledge/signature-nonce-check.md)
+for why the comparison holds across SeedSigner's signing backends and what a
+match cannot prove.
 
 Signatures accumulate across scans, so a 2-of-3 can be completed one cosigner at
 a time the way a coordinator combines PSBTs: sign with alice, read it back, load
@@ -216,17 +229,17 @@ the seed activities work to undo that:
 - The QR starts **locked in a vault**. One tap parts the doors; tapping the
   revealed QR shuts it again, and navigating away re-locks everything so the next
   person at the table starts from the closed state.
-- Data modules are drawn as **marker dabs** — a short round-capped drag at a
+- Data modules are drawn as **marker dabs**: a short round-capped drag at a
   random angle, 0.95–1.30 cells wide, so most overflow their cell and neighbours
   merge into blobs. Registration blocks stay flat and much blacker, because on a
   real template those are pre-printed. That contrast shows at a glance which
   parts came with the template and which parts a person filled in.
 - Each key gets **its own marker colour**, assigned explicitly (alice purple,
-  bob blue, carol green — the 2-of-3 cosigners, spread wide so they're
+  bob blue, carol green; the 2-of-3 cosigners, spread wide so they're
   distinguishable at a glance). The hand-written label uses the same marker.
 - The card is one continuous sheet of **paper**: warm tint, grain, fold creases,
   and the transcription grid. The label is drawn *into the canvas* rather than
-  sitting in the card as HTML — as a sibling element it was a second surface,
+  sitting in the card as HTML: as a sibling element it was a second surface,
   and the join between the textured canvas and the flat card padding was a
   visible rectangle that broke the illusion.
 
@@ -239,13 +252,13 @@ Geometry rules that keep this scannable:
   that are too small: an oversized dab still cannot reach a neighbouring cell's
   sample point, whereas an undersized one fails to cover its own.
 - **Colours stay dark.** A decoder binarizes on luminance, so a marker colour is
-  only safe while it's dark against the paper — a yellow highlighter would look
+  only safe while it's dark against the paper; a yellow highlighter would look
   entirely plausible and scan terribly.
 
 Verified by rendering in a real browser and decoding with zbar: both SeedQR
 variants at four sizes down to a 320px phone, and every marker colour at the
 tightest size. A sweep found zbar still decoding with dot sizes down to 0.40 of
-full radius, so the shipped values have wide margin — though a camera off-axis
+full radius, so the shipped values have wide margin, though a camera off-axis
 in bad light is far less forgiving than zbar on a clean PNG, and hardware is the
 only test that counts. These renderings have been confirmed scanning on a real
 SeedSigner.
@@ -261,7 +274,7 @@ SeedSigner.
 Static hosting means every PSBT is precomputed, so "configurable" is a bounded
 matrix (80 scenarios) rather than arbitrary runtime construction:
 
-- **Full cross at 3 inputs** — all 7 script types × 4 output shapes.
+- **Full cross at 3 inputs**: all 7 script types × 4 output shapes.
   Single sig: native segwit, nested segwit, taproot, legacy P2PKH.
   Multisig: P2WSH, P2SH-P2WSH, legacy P2SH.
   Shapes: send-with-change, full spend, self-transfer, three-recipients+change.
@@ -270,13 +283,13 @@ matrix (80 scenarios) rather than arbitrary runtime construction:
 - Both networks. Each scenario ships 4 QR variants (UR/BBQR × Normal/Low).
 
 The **default** flow is 3 inputs, native segwit single sig, one external
-recipient plus change and the fee — two UR frames at Normal density, about as
+recipient plus change and the fee: two UR frames at Normal density, about as
 easy as an animated scan gets.
 
 ### Why static QRs ship as module matrices
 
-Every QR that isn't an animated transaction — seeds, descriptors, addresses,
-messages, BBQR — is emitted as a **bare module matrix** (packed bits, row-major,
+Every QR that isn't an animated transaction (seeds, descriptors, addresses,
+messages, BBQR) is emitted as a **bare module matrix** (packed bits, row-major,
 no quiet zone) rather than payload text, and the browser just blits the modules.
 Python stays the only encoder for those, so their settings cannot drift from
 Sparrow's, and the on-screen white border stays a front-end concern. Two
@@ -286,7 +299,7 @@ apply to the runtime-generated frames too:
 - **Integer module scaling only**, in device pixels. A fractional scale gives
   some modules an extra pixel and that asymmetry wrecks decoding.
 - **One scale per animation.** Frames can differ by a QR version, so the scale
-  locks to the largest frame and smaller ones are centred — otherwise the symbol
+  locks to the largest frame and smaller ones are centred; otherwise the symbol
   resizes mid-scan and the camera re-hunts.
 
 The on-screen quiet zone is 4 modules (spec minimum) rather than Sparrow's 2.
@@ -317,15 +330,15 @@ node tools/smoke_site.mjs http://localhost:8777/
 ```
 
 That drives the real page in headless Chromium at desktop and phone sizes. It is
-not decoration — the first run caught two bugs that no data-level check could
+not decoration: the first run caught two bugs that no data-level check could
 see: an author-origin `display: flex` beating the UA stylesheet's
 `[hidden] { display: none }`, which left a white fullscreen overlay covering the
 whole page; and a step of the guided flow that was marked `hidden` in the markup
 with nothing ever unhiding it.
 
 > Use zbar, not OpenCV. OpenCV's built-in `QRCodeDetector` silently fails on
-> dense symbols — it could not read a v16 QR that zbar reads perfectly,
-> *including one produced by the reference encoder itself* — so it is worthless
+> dense symbols: it could not read a v16 QR that zbar reads perfectly,
+> *including one produced by the reference encoder itself*, so it is worthless
 > as a correctness gate.
 
 ## Standalone generators
@@ -343,20 +356,20 @@ vendored UR codec.
 ## Fixtures included
 
 Seeds: `alice bob carol dave erin frank grace` (mix of 24- and 12-word, entropy =
-SHA256 of a domain-separated name — deterministic but realistic).
+SHA256 of a domain-separated name; deterministic but realistic).
 
 Wallets, each built for mainnet **and** testnet: `ss_native_segwit`,
 `ss_nested_segwit`, `ss_taproot`, `ss_legacy`, `2of3_p2wsh`, `3of5_p2wsh`,
 `2of3_p2sh_p2wsh`, `2of3_p2sh`.
 
-The two networks genuinely differ — coin type `0h` vs `1h` in the path, xpub vs
-tpub version bytes in the descriptor and its UR, and different addresses — and
+The two networks genuinely differ (coin type `0h` vs `1h` in the path, xpub vs
+tpub version bytes in the descriptor and its UR, and different addresses), and
 SeedSigner's own network setting has to match. Mainnet is the site default so a
 demo attendee never has to change device settings.
 
 ## Sparrow fidelity (measured)
 
-**Static descriptor QR** — single-part `ur:crypto-output`, uppercased (→
+**Static descriptor QR**: single-part `ur:crypto-output`, uppercased (→
 alphanumeric mode), EC level L, margin 2:
 
 | Wallet | UR length | QR |
@@ -365,7 +378,7 @@ alphanumeric mode), EC level L, margin 2:
 | 3of5_p2wsh | 1097 chars | v19, 93×93 |
 | 2of3_p2sh_p2wsh | 683 chars | v15, 77×77 |
 
-**Animated `ur:crypto-psbt`** — fragment cap is in CBOR **bytes** (Normal=400,
+**Animated `ur:crypto-psbt`**: fragment cap is in CBOR **bytes** (Normal=400,
 Low=80), uppercased per frame, EC-L, margin 2, 5 fps default:
 
 | Density | fragment | per-frame QR |
@@ -377,13 +390,13 @@ A 100-input 2-of-3 PSBT is 39,197 bytes → 98 pure frames at Normal, 490 at Low
 (plus the fountain tail).
 BBQR caps are in **chars** of the encoded body (Normal=2000, Low=1000).
 
-`sortedmulti`, not `multi` — these are UR script-expression tags **407** and
+`sortedmulti`, not `multi`: these are UR script-expression tags **407** and
 **406** respectively, they are not interchangeable, and they derive *different
 addresses* from the same keys. Sparrow means sortedmulti.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).
 
 The bundled **Permanent Marker** webfont (`site/permanent-marker.woff2`, by Font
 Diner) is Apache-2.0; its licence travels with it at
