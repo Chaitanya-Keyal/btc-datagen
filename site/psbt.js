@@ -185,7 +185,7 @@ function checkInput(inp, expected, taproot) {
         note = e.message;
       }
     }
-    results.push({ ...key, valid, note, scheme: 'schnorr',
+    results.push({ ...key, valid, note, scheme: 'schnorr', sigHex: hex(inp.tapKeySig),
                    identical: sameAsReference(inp.tapKeySig, key) });
     return results;
   }
@@ -208,7 +208,7 @@ function checkInput(inp, expected, taproot) {
         note = e.message;
       }
     }
-    results.push({ ...key, valid, note, scheme: 'ecdsa',
+    results.push({ ...key, valid, note, scheme: 'ecdsa', sigHex: hex(sigBytes),
                    identical: sameAsReference(sigBytes, key) });
   }
   return results;

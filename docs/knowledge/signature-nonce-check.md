@@ -40,8 +40,10 @@ across 200 random key and digest pairs, and the firmware's BIP340 nonce function
 the same unmasked-key construction described below.
 
 Because the source is shared, a browser can reproduce a device's signatures by running
-`d9560e0` itself, compiled to WASM, with embit's two signing calls mirrored around it.
-A BIP340 library written to the current spec cannot: see the next section.
+`d9560e0` itself, compiled to WASM. The site does: its verifier is that library in the
+main WASM module, and the random-key check runs embit's own `sign_with` over it in a
+MicroPython build (`micropython-in-the-browser.md`). A BIP340 library written to the
+current spec cannot: see the next section.
 
 ## Trap: "no aux data" changed meaning in libsecp256k1
 
@@ -75,8 +77,14 @@ A match proves that the signature's nonce came from the key and the digest alone
 nothing is hidden in that signature. It does not prove the device behaves the same
 with other keys or transactions. This site's seeds and transactions are published and
 fixed, so firmware written to evade exactly this check could recognize them and sign
-honestly only for them. That is a limit of any black-box test with known inputs; a
-stronger test uses a key the firmware cannot anticipate.
+honestly only for them. That is a limit of any black-box test with known inputs.
+
+The random-key check (*Check my SeedSigner*) is the stronger test: a key made in the
+browser on the spot, spending made-up coins with random amounts, outpoints,
+recipient, and fee, so there is no published seed or transaction to recognize. It
+still cannot prove the device behaves the same with a key that holds real funds, but
+firmware would then have to cheat on keys it has never seen, which is the case the
+attack depends on.
 
 ## What a mismatch means
 
@@ -95,3 +103,8 @@ data that no grinding counter reaches. The round-trip test requires that case to
 as valid and complete while reporting `anyDifferent`, and the smoke test requires the
 page to show the alarm. The honest "signed" cases must report no difference, which is
 what proves the build's references and the browser's comparison agree.
+
+For the random-key check, the round-trip test also signs each in-browser session the
+way a device does (embit under CPython), and once more with a different nonce, and
+requires the same verdicts against the session's own references. The smoke test does
+it through the camera in a real browser for a native segwit and a taproot key.

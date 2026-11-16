@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Fetch the third-party code the site is built from, at pinned versions: four C
-# libraries for the WASM module, into deps/ (gitignored). The site runs no
-# third-party JavaScript.
+# Fetch the third-party code the site is built from, at pinned versions, into deps/
+# (gitignored): four C libraries for the main WASM module, and for the fresh-key
+# module the MicroPython runtime, embit, and the ESP32 firmware's own cryptographic
+# modules. The site runs no third-party JavaScript.
 #
 # These are NOT git submodules of this repo on purpose. This repo is mirrored to
 # four forges, and submodules make every mirror carry a URL that has to resolve from
@@ -55,6 +56,28 @@ QRCODEGEN_REF="2c9044de6b049ca25cb3cd1649ed7e27aa055138"
 SECP256K1_URL="https://github.com/kdmukAI-bot/esp-secp256k1.git"
 SECP256K1_REF="6eda9b6a8ddb2160731ebdec7800f5a488830873"
 
+# --- the fresh-key module (tools/wasm/build_mpy.sh) --------------------------
+# The fresh-key mode runs embit itself in the browser, on the interpreter the ESP32
+# firmware runs, so a throwaway key's PSBT, sighashes, and reference signatures come
+# from the code a SeedSigner signs with rather than from a reimplementation.
+MICROPYTHON_URL="https://github.com/micropython/micropython.git"
+MICROPYTHON_REF="78ff170de9e32c79db6e64d3e33d2bd60002bdcd"      # v1.27.0, the firmware's
+# Freezing modules requires this submodule to be present; this is the commit
+# v1.27.0 records for it. Nothing from it is frozen.
+MICROPYTHON_LIB_URL="https://github.com/micropython/micropython-lib.git"
+MICROPYTHON_LIB_REF="6ae440a8a144233e6e703f6759b7e7a0afaa37a4"
+# Upstream embit at the v0.8.0 tag: the Python sources of the 0.8.0 release that
+# SeedSigner 0.8.x pins (identical to the PyPI package).
+EMBIT_URL="https://github.com/diybitcoinhardware/embit.git"
+EMBIT_REF="84cce66fb831fa6d625fb73f28e03605f3c04e28"
+# The firmware's SHA-512, PBKDF2, HMAC-SHA512, and RIPEMD-160 module and the frozen
+# hashlib.py and hmac.py shims that route embit to it.
+FIRMWARE_URL="https://github.com/kdmukAI-bot/seedsigner-micropython-builder.git"
+FIRMWARE_REF="a9f865c68b20457692ab4547e3394785114b507f"
+# The mbedtls that module is built on in the firmware: ESP-IDF 5.5.1's submodule.
+MBEDTLS_URL="https://github.com/espressif/mbedtls.git"
+MBEDTLS_REF="b5d87eaa6748b7a6fa70593178c08b4480e9b71e"
+
 # --- fetch ------------------------------------------------------------------
 
 link_local() {
@@ -92,6 +115,21 @@ fetch() {
   echo "  $name  @ ${ref:0:12}"
 }
 
+# One commit, no history: for the large trees, where a full clone would be hundreds
+# of megabytes for a few files. GitHub serves any commit by its SHA. Submodules are
+# not fetched; the one MicroPython needs is fetched on its own.
+fetch_commit() {
+  local name="$1" url="$2" ref="$3" dir="${4:-$DEPS/$1}"
+  if [ -L "$dir" ]; then rm -f "$dir"; fi
+  if [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)" != "$ref" ]; then
+    rm -rf "$dir"
+    git init --quiet "$dir"
+    git -C "$dir" fetch --quiet --depth 1 "$url" "$ref"
+    git -C "$dir" checkout --quiet --detach FETCH_HEAD
+  fi
+  echo "  $name  @ ${ref:0:12}"
+}
+
 mkdir -p "$DEPS"
 echo "==> Dependencies in $DEPS"
 link_local cUR       "${SSQR_CUR_DIR:-}"       || fetch cUR       "$CUR_URL"       "$CUR_REF"
@@ -99,6 +137,12 @@ link_local k_quirc   "${SSQR_KQUIRC_DIR:-}"    || fetch k_quirc   "$KQUIRC_URL" 
 link_local qrcodegen "${SSQR_QRCODEGEN_DIR:-}" || fetch qrcodegen "$QRCODEGEN_URL" "$QRCODEGEN_REF"
 link_local esp-secp256k1 "${SSQR_SECP256K1_DIR:-}" \
   || fetch esp-secp256k1 "$SECP256K1_URL" "$SECP256K1_REF"
+fetch_commit micropython "$MICROPYTHON_URL" "$MICROPYTHON_REF"
+fetch_commit micropython-lib "$MICROPYTHON_LIB_URL" "$MICROPYTHON_LIB_REF" \
+  "$DEPS/micropython/lib/micropython-lib"
+fetch_commit embit "$EMBIT_URL" "$EMBIT_REF"
+fetch_commit seedsigner-micropython-builder "$FIRMWARE_URL" "$FIRMWARE_REF"
+fetch_commit mbedtls "$MBEDTLS_URL" "$MBEDTLS_REF"
 
 # Retired: @noble/secp256k1 used to be fetched into site/vendor/. Remove a stale
 # copy so a local build cannot keep serving it.

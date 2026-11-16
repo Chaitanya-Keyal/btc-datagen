@@ -205,6 +205,7 @@ void ssqr_dec_free(ur_decoder_t *dec) { ur_decoder_free(dec); }
 #define SSQR_MAX_MODULES 177
 #define SSQR_BITS_BYTES ((SSQR_MAX_MODULES * SSQR_MAX_MODULES + 7) / 8)
 
+static int ssqr_qr_pack(void);
 static uint8_t g_qr[qrcodegen_BUFFER_LEN_MAX];
 static uint8_t g_qr_scratch[qrcodegen_BUFFER_LEN_MAX];
 static uint8_t g_qr_bits[SSQR_BITS_BYTES];
@@ -242,7 +243,27 @@ int ssqr_qr_encode(const char *text) {
                             qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
                             qrcodegen_Mask_AUTO, /*boostEcl=*/false))
     return 0;
+  return ssqr_qr_pack();
+}
 
+/* The same, for raw bytes in byte mode: a CompactSeedQR, whose payload is the
+ * seed's entropy and may hold any byte value, NUL included, so it cannot go
+ * through a C string. */
+EMSCRIPTEN_KEEPALIVE
+int ssqr_qr_encode_bytes(const uint8_t *data, int len) {
+  g_qr_version = 0;
+  if (!data || len < 0 || (size_t)len > sizeof(g_qr_scratch))
+    return 0;
+  memcpy(g_qr_scratch, data, (size_t)len);
+  if (!qrcodegen_encodeBinary(g_qr_scratch, (size_t)len, g_qr, qrcodegen_Ecc_LOW,
+                              qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                              qrcodegen_Mask_AUTO, /*boostEcl=*/false))
+    return 0;
+  return ssqr_qr_pack();
+}
+
+/* Pack the symbol just encoded into g_qr_bits; returns its module count. */
+static int ssqr_qr_pack(void) {
   const int size = qrcodegen_getSize(g_qr);
   memset(g_qr_bits, 0, (size_t)(size * size + 7) / 8);
   int i = 0;

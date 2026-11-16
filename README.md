@@ -50,10 +50,12 @@ site/                 the demo site's source
                       signature verification)
   psbt.js             minimal PSBT reader + signature verification
   scan.js             camera capture -> QR decode -> UR reassembly
-  vendor/             gitignored: built ssqr.{js,wasm}
+  freshkey.js         the random-key check's link to embit (MicroPython in WASM)
+  vendor/             gitignored: built ssqr.{js,wasm} and micropython.{mjs,wasm}
 site/dist/            built site; gitignored, produced by tools/build_site.py
-deps/                 gitignored: cUR, k_quirc, qrcodegen, esp-secp256k1 at pinned
-                      commits
+deps/                 gitignored: everything fetch_deps.sh pins (cUR, k_quirc,
+                      qrcodegen, esp-secp256k1, MicroPython, embit, mbedtls, and
+                      the firmware's hash module)
 tools/
   build_fixtures.py   (re)generate fixtures deterministically
   build_site.py       build the static site into site/dist/
@@ -62,8 +64,12 @@ tools/
   smoke_site.mjs      headless-browser check of the page itself
   wasm/
     fetch_deps.sh     pull the third-party sources at pinned commits/hashes
-    build.sh          Docker + pinned emsdk -> site/vendor/ssqr.{js,wasm}
+    build.sh          Docker + pinned emsdk -> site/vendor/ssqr.{js,wasm}, then
+                      build_mpy.sh
+    build_mpy.sh      -> site/vendor/micropython.{mjs,wasm} (the random-key module)
     ssqr.c            the C surface the site talks to
+    mpy/              its MicroPython variant, C modules, frozen manifest, and
+                      freshkey.py (the session builder, run in the browser)
     reference.py      emit the reference data the round-trip test checks against
     roundtrip_test.mjs  encode -> rasterize -> decode -> reassemble -> verify
 docs/knowledge/       reverse-engineering notes & format references
@@ -83,11 +89,12 @@ The site also needs its WASM module, which requires **Docker** (a pinned emsdk
 image; nothing is installed on the host):
 
 ```bash
-bash tools/wasm/build.sh          # -> site/vendor/ssqr.{js,wasm}
+bash tools/wasm/build.sh          # -> site/vendor/ssqr.{js,wasm}, micropython.{mjs,wasm}
 ```
 
 This is not optional. Every animated transaction QR is generated in the browser
-by that module, and `tools/build_site.py` refuses to build without it.
+by the first module, the random-key check runs embit in the second, and
+`tools/build_site.py` refuses to build without both.
 
 ## The demo site
 
@@ -121,7 +128,9 @@ prints all of this on startup.
 
 Someone at a demo table may have the device in their hands for twenty seconds, so
 the site is built for one glance and one tap. The landing page is a warning line
-and four buttons, nothing else:
+and two labeled groups of buttons. *Demo* holds the four below; *Testing and
+verification* holds *Check my SeedSigner*, a different job (vetting a device, see
+below).
 
 - **Sign a transaction**: the main event. One scrolling page: *Scan the
   transaction* (QR first, right under the banner), then *Load the seed*, then for
@@ -223,6 +232,41 @@ Signatures accumulate across scans, so a 2-of-3 can be completed one cosigner at
 a time the way a coordinator combines PSBTs: sign with alice, read it back, load
 bob's seed, scan the same transaction, read that back, and the page reports the
 threshold met.
+
+### Check my SeedSigner: a random test key
+
+The demo seeds and transactions are published and fixed, so firmware written to
+evade the nonce check could recognize them and sign honestly only for them. *Check
+my SeedSigner* removes that: the page makes a new throwaway key on the spot
+(Native SegWit, Taproot, Nested SegWit, or Legacy) and a transaction spending
+made-up coins to it, with random amounts, outpoints, recipient, and fee. Then it
+runs the same three steps and the same scan check as any demo transaction. The key
+lives only in the page's memory; nothing is saved.
+
+Unlike the demo, this mode is meant for people on their own, many of them new to
+SeedSigner, so it adds the words the demo leaves out: a short introduction on why
+the check matters, what a mismatch means, and why running it is safe; steps titled
+as tests (*Scan the test transaction*, *Load the test key*); and a step-two hint
+that says what a SeedQR is, that the page simulates a hand-drawn one on paper, and
+that the test key is disposable. The result lists each input's signature as its own
+row (most people picture a transaction as having one signature), showing r and s
+rather than the DER framing every ECDSA signature shares. Each new key's SeedQR is
+drawn in a random ink color (any hue, darkened to the luminance of the darkest demo
+pens so it still scans), a visible sign that the key is new too.
+
+All of it (BIP39, BIP32, the PSBT, every sighash, and the reference signatures)
+comes from embit itself, running in the browser on MicroPython, the interpreter
+the ESP32 firmware runs. The module compiles in the firmware's own libsecp256k1
+binding and hash functions and freezes upstream embit 0.8.0, so the page signs
+with the code a SeedSigner signs with rather than a reimplementation of it. It is
+about 390 KB gzipped and loads only when this mode opens. See
+[docs/knowledge/micropython-in-the-browser.md](docs/knowledge/micropython-in-the-browser.md)
+for the build and its traps.
+
+The round-trip test holds the browser's sessions to CPython's: the same
+`tools/wasm/mpy/freshkey.py`, given the same random bytes, must produce the same
+key, PSBT, verification data, and reference signatures under both, and that
+verification data must equal what `tools/build_site.py` computes for the PSBT.
 
 ### The handmade SeedQR
 

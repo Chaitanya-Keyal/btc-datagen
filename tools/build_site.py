@@ -18,8 +18,10 @@ tools/wasm/roundtrip_test.mjs is the gate that does it.
 
 Layout:
     site/dist/
-      index.html app.js ssqr.js psbt.js scan.js styles.css  (copied from site/)
+      index.html app.js styles.css ssqr.js psbt.js scan.js freshkey.js
+                                                            (copied from site/)
       vendor/ssqr.{js,wasm}                                 (built)
+      vendor/micropython.{mjs,wasm}                         (built; fresh-key check)
       data/index.json                     scenario + wallet + seed catalog
       data/scenario/<id>.json             base64 PSBT, detail, verification data
       data/qr/<id>.bbqr.<density>.json    BBQR frame matrices (lazy-loaded)
@@ -60,8 +62,9 @@ SITE_SRC = os.path.join(ROOT, "site")
 DIST = os.path.join(SITE_SRC, "dist")
 STATIC_FILES = ["index.html", "app.js", "styles.css", "seedsigner-logo.svg",
                 # ES modules, loaded on demand by app.js: the WASM wrapper, the
-                # PSBT reader/verifier, and the camera scanner.
-                "ssqr.js", "psbt.js", "scan.js",
+                # PSBT reader/verifier, the camera scanner, and the fresh-key
+                # check's link to embit.
+                "ssqr.js", "psbt.js", "scan.js", "freshkey.js",
                 # Self-hosted rather than pulled from a font CDN: this thing gets
                 # opened on conference wifi, and a webfont that fails to load
                 # would silently drop the handwritten label back to a system
@@ -75,8 +78,10 @@ STATIC_FILES = ["index.html", "app.js", "styles.css", "seedsigner-logo.svg",
 STATIC_DIRS = ["licenses", "vendor"]
 
 # The site cannot run without these; there is no pre-rendered fallback for the
-# animated transaction QRs any more.
-WASM_ARTIFACTS = ["vendor/ssqr.js", "vendor/ssqr.wasm"]
+# animated transaction QRs any more, and the fresh-key check runs embit in the
+# MicroPython module (tools/wasm/build_mpy.sh).
+WASM_ARTIFACTS = ["vendor/ssqr.js", "vendor/ssqr.wasm",
+                  "vendor/micropython.mjs", "vendor/micropython.wasm"]
 
 MIN_FRAGMENT_BYTES = 10          # Sparrow MIN_FRAGMENT_LENGTH
 DEFAULT_FPS = 5                  # Sparrow ANIMATION_PERIOD_MILLIS = 200ms
@@ -618,6 +623,11 @@ def main():
                         "densities": list(v["densities"])}
                     for k, v in FORMATS.items()},
         "density_labels": DENSITY_LABELS,
+        # What the fresh-key mode needs to run a UR fountain over a PSBT it builds in
+        # the browser: the fragment sizes and layout ceiling ur_runtime_spec uses.
+        "ur_runtime": {"max_fragment": dict(FORMATS["ur"]["densities"]),
+                       "min_fragment": MIN_FRAGMENT_BYTES,
+                       "layout_ceiling_seq": LAYOUT_CEILING_SEQ},
         # Human-friendly names for the pickers. "P2SH-P2WPKH" means nothing to
         # someone at a demo table; "Nested SegWit" does.
         "script_labels": {name: info.label for name, info in

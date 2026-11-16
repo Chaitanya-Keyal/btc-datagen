@@ -12,9 +12,10 @@
 #   EMSDK_TAG=4.0.14 bash tools/wasm/build.sh
 #   SSQR_CUR_DIR=~/dev/.../cUR bash tools/wasm/build.sh   # iterate on a local cUR
 #
-# Output is gitignored. Run this once before `python -m tools.build_site`; the
-# build refuses to produce a site without it, because every animated transaction
-# QR is generated at runtime by this module.
+# Also builds the random-key module (build_mpy.sh). Output is gitignored. Run this
+# once before `python -m tools.build_site`; the build refuses to produce a site
+# without it, because every animated transaction QR is generated at runtime by
+# this module.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,8 +108,13 @@ docker run --rm \
     -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
     -o site/vendor/ssqr.js
 
+# The fresh-key check's module: MicroPython with embit and the firmware's
+# cryptographic modules. Its own script, since it is a separate build.
+bash "$SCRIPT_DIR/build_mpy.sh"
+
 echo ""
 echo "==> Done:"
-ls -la "$OUT_DIR"/ssqr.js "$OUT_DIR"/ssqr.wasm
+ls -la "$OUT_DIR"/ssqr.js "$OUT_DIR"/ssqr.wasm "$OUT_DIR"/micropython.mjs \
+  "$OUT_DIR"/micropython.wasm
 echo ""
 echo "    Check it end to end:  python -m tools.wasm.reference && node tools/wasm/roundtrip_test.mjs"

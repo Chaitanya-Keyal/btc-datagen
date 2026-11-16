@@ -144,8 +144,24 @@ main { max-width: 40rem; margin: 0 auto; padding: var(--pad); }
 .scenario-head p { margin: 5px 0 0; color: var(--muted); font-size: .95rem; }
 
 /* --- landing page activities --------------------------------------------- */
+/* Two labeled groups: the demo, then testing and verification. The heading and a
+   hard divider are what separate them, so each group gets a filled lead button. */
+.landing-group { margin-top: 22px; }
+.landing-group + .landing-group {
+  border-top: 2px solid var(--line);
+  margin-top: 28px;
+  padding-top: 22px;
+}
+.landing-group-title {
+  font-size: .85rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
 /* Real buttons, not selectable cards: big, filled, thumb-sized, title only. */
-.activities { display: grid; gap: 12px; margin-top: 18px; }
+.activities { display: grid; gap: 12px; }
 .activity {
   display: flex;
   align-items: center;
@@ -168,6 +184,26 @@ main { max-width: 40rem; margin: 0 auto; padding: var(--pad); }
   font-size: 1.3rem;
   min-height: 82px;
 }
+/* The lead button of its own group, so filled like the demo's lead: the heading and
+   divider above already say it is a different kind of thing. */
+.activity-check {
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+.activity-check small { font-size: .85rem; font-weight: 400; opacity: .85; }
+.fresh-controls { margin: -4px 0 12px; }
+/* Body copy meant to be read, so full text color rather than muted, set apart from
+   step 1 by the same hard divider the steps use between themselves. */
+.check-intro {
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 18px;
+  margin-bottom: 22px;
+}
+.check-intro h2 { font-size: 1.3rem; margin: 4px 0 10px; }
+.check-intro h3 { font-size: 1.05rem; margin: 18px 0 6px; }
+.check-intro p { margin: 0 0 10px; line-height: 1.45; }
+.check-intro p:last-child { margin-bottom: 0; }
 
 .view-title { font-size: 1.3rem; margin-bottom: 10px; }
 .view-intro { color: var(--muted); margin: 0 0 14px; }
@@ -920,6 +956,34 @@ input[type="range"] { width: 100%; height: 40px; accent-color: var(--accent); }
 .scan-alarm .scan-verdict strong,
 .scan-alarm .qr-note { color: var(--bad-text); }
 .scan-result .qr-note { margin-bottom: 0; }
+
+/* The check's per-input signature list, inside its verdict. */
+.sig-list { list-style: none; margin: 8px 0; padding: 0; font-size: .9rem; }
+.sig-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(127, 127, 127, .3);
+  border-top-color: color-mix(in srgb, currentColor 22%, transparent);
+}
+.sig-row:last-child {
+  border-bottom: 1px solid rgba(127, 127, 127, .3);
+  border-bottom-color: color-mix(in srgb, currentColor 22%, transparent);
+}
+.sig-mark { flex: none; width: 1.1em; font-weight: 700; }
+.sig-hex {
+  margin-left: auto;
+  font-family: ui-monospace, monospace;
+  font-size: .85rem;
+  white-space: nowrap;
+}
+.sig-same .sig-mark { color: var(--ok-line); }
+.sig-differ { color: var(--bad-text); font-weight: 600; }
+.sig-differ .sig-mark { color: var(--bad-line); }
+.sig-missing { opacity: .7; }
+.sig-alarm { color: var(--bad-text); }
+.sig-alarm p { margin: 4px 0 0; font-size: .9rem; }
 
 /* Transaction id under the verdict table.
    Its own line rather than a table row: a two-column key/value table cannot

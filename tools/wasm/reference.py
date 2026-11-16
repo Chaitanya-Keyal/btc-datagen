@@ -21,6 +21,14 @@ WRONG transaction, and a perfectly valid signature made with a different nonce
 (which must verify but not match the build's reference signature). A verifier
 that cannot reject those is decoration.
 
+**Fresh-key sessions.** The fresh-key mode builds its key, PSBT, and verification
+data in the browser, by running tools/wasm/mpy/freshkey.py inside the MicroPython
+module. These are the same sessions made by the same file under CPython, after
+asserting that each one's verification data and summary equal what
+tools/build_site.py computes for that PSBT. The test requires the WASM build to
+reproduce them exactly, and the device side of each (an honest signature, and one
+re-nonced) to verify as it should.
+
 Run:  python -m tools.wasm.reference            (writes to the default path)
       python -m tools.wasm.reference --out X.json
 """
@@ -32,6 +40,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import base64
+import hashlib
+from types import SimpleNamespace
 
 from embit import ec
 from embit.psbt import PSBT
@@ -44,7 +54,8 @@ from common.keys import root_key
 from common.qr import qr_matrix
 from common.ur2.ur import UR
 from common.ur2.ur_encoder import UREncoder
-from tools.build_site import FORMATS, MIN_FRAGMENT_BYTES
+from common.psbt import summarize
+from tools.build_site import FORMATS, MIN_FRAGMENT_BYTES, verification_data
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DIST = os.path.join(ROOT, "site", "dist")
@@ -288,6 +299,42 @@ def pick_scenarios(index: dict) -> list:
     return list(picks.values())
 
 
+FRESH_NETWORKS = ["main", "test"]
+
+
+def build_fresh_cases() -> list:
+    sys.path.insert(0, os.path.join(ROOT, "tools", "wasm", "mpy"))
+    import freshkey
+
+    cases = []
+    for script_type in ["P2WPKH", "P2TR", "P2SH-P2WPKH", "P2PKH"]:
+        for network in FRESH_NETWORKS:
+            label = f"fresh {script_type} {network}"
+            rand_hex = hashlib.sha512(label.encode()).hexdigest()
+            session = freshkey.session(rand_hex, script_type, network)
+
+            # The browser's verification data and summary must be exactly what the
+            # build computes for the same PSBT, so the scan step means the same thing
+            # for a fresh key as for a demo seed.
+            psbt = PSBT.from_string(session["psbt_base64"])
+            signer = SimpleNamespace(name=session["seed_name"],
+                                     fingerprint=session["master_fingerprint"],
+                                     mnemonic=session["mnemonic"], network=network)
+            assert session["verify"] == verification_data(psbt, [signer], 1), label
+            assert session["summary"] == summarize(psbt, network), label
+
+            # The device's side: signed the way a SeedSigner signs, and once more
+            # over the same digest with a different nonce.
+            signed = sign_psbt(session["psbt_base64"], [session["mnemonic"]], network)
+            renonced = renonce(signed, session["mnemonic"], network,
+                               session["verify"]["inputs"][0]["sighash"])
+            cases.append({"label": label, "rand_hex": rand_hex,
+                          "script_type": script_type, "network": network,
+                          "session": session, "signed_psbt_base64": signed,
+                          "renonced_psbt_base64": renonced})
+    return cases
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=DEFAULT_OUT)
@@ -312,9 +359,14 @@ def main():
     for case in signing:
         print(f"  {case['label']}")
 
+    print()
+    fresh = build_fresh_cases()
+    for case in fresh:
+        print(f"  {case['label']}")
+
     with open(args.out, "w") as f:
         json.dump({"min_fragment": MIN_FRAGMENT_BYTES, "cases": cases,
-                   "signing": signing}, f)
+                   "signing": signing, "fresh": fresh}, f)
     print(f"\nWrote {args.out} ({os.path.getsize(args.out) / 1024:.0f} KiB)")
 
 

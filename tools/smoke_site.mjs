@@ -24,7 +24,8 @@
  * Run (with `python -m tools.serve 8777` already running):
  *   node tools/smoke_site.mjs http://localhost:8777/
  */
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const BASE = process.argv[2] || 'http://localhost:8777/';
@@ -94,14 +95,14 @@ async function checkCanvas(page, where, id, label) {
  * stream tests everything the site actually owns.
  *
  * Three cases, because a checker that cannot say no is decoration:
- *   signed            -> "the signature is real"
+ *   signed            -> "signed and verified"
  *   unsigned          -> "not signed yet"
  *   a different tx    -> "that is a different transaction"
  */
 const SCAN_CASES = [
   // Valid AND byte-identical to the build's own signature: the nonce check's
   // reassurance must show, not just the verdict.
-  ['signed', /signature is real.*exact match/i],
+  ['signed', /signed and verified.*exact match/i],
   ['unsigned', /not signed yet/i],
   ['different transaction', /different transaction/i],
   // Valid, but made with another nonce: the nonce check's alarm.
@@ -190,7 +191,7 @@ async function runMultisigScanCheck(browser, ctx, cases) {
     fail(where, `multisig: re-scanning one cosigner should say so; got "${repeat.slice(0, 120)}"`);
   }
   const second = await scan(both.psbt_base64);
-  if (!/signature is real/i.test(second)) {
+  if (!/signed and verified/i.test(second)) {
     fail(where, `multisig: the threshold should complete across scans; got "${second.slice(0, 160)}"`);
   } else {
     console.log(`  scan ${'multisig, collected'.padEnd(22)} -> ${second.split('  ')[0].slice(0, 60)}`);
@@ -289,7 +290,153 @@ async function runScanChecks(browser) {
   }
 
   await runMultisigScanCheck(browser, ctx, fixtures.signing || []);
+  await runFreshKeyCheck(ctx);
   await ctx.close();
+}
+
+const PYTHON = process.env.PYTHON
+  || (existsSync('.venv/bin/python') ? '.venv/bin/python' : 'python');
+
+/* Sign a PSBT the way a SeedSigner does (embit's sign_with), outside the page. */
+function signLikeADevice(mnemonic, b64, network) {
+  const code = [
+    'import sys',
+    'from embit.psbt import PSBT',
+    'from common.keys import root_key',
+    'psbt = PSBT.from_string(sys.argv[2])',
+    'psbt.sign_with(root_key(sys.argv[1], sys.argv[3]))',
+    'print(psbt.to_string())',
+  ].join('\n');
+  const out = spawnSync(PYTHON, ['-c', code, mnemonic, b64, network], { encoding: 'utf8' });
+  if (out.status !== 0) throw new Error(`signing failed: ${out.stderr.trim().slice(-200)}`);
+  return out.stdout.trim();
+}
+
+/* The same, then input 1 re-signed with another nonce: a valid signature that is
+ * not the one an honest SeedSigner makes, which is what a tampered one returns. */
+function signLikeATamperedDevice(mnemonic, b64, network, sighash) {
+  const signed = signLikeADevice(mnemonic, b64, network);
+  const code = [
+    'import sys',
+    'from tools.wasm.reference import renonce',
+    'print(renonce(*sys.argv[1:5]))',
+  ].join('\n');
+  const out = spawnSync(PYTHON, ['-c', code, signed, mnemonic, network, sighash],
+    { encoding: 'utf8' });
+  if (out.status !== 0) throw new Error(`re-signing failed: ${out.stderr.trim().slice(-200)}`);
+  return out.stdout.trim();
+}
+
+/* The fresh-key check end to end: the page makes a key and a transaction with embit
+ * in its MicroPython module, the "device" (embit under CPython) signs it, and the
+ * scan must come back valid AND byte-identical to the page's own reference. Then
+ * the same for taproot, picked in the page, whose no-aux nonce is the convention
+ * most likely to drift. */
+async function runFreshKeyCheck(ctx) {
+  const where = 'fresh';
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => fail(where, `pageerror: ${e.message}`));
+  await page.goto(`${BASE}?do=check`, { waitUntil: 'networkidle' });
+
+  for (const [type, label] of [['P2WPKH', 'Native SegWit'], ['P2TR', 'Taproot']]) {
+    if (type !== 'P2WPKH') {
+      await page.click(`#fresh-seg button:has-text("${label}")`);
+    }
+    const ready = await page.waitForFunction((want) => {
+      const s = window.__freshSession && window.__freshSession();
+      return s && s.script_type === want
+        && document.getElementById('scenario-title').textContent.startsWith('Random test key');
+    }, type, { timeout: 30000 }).then(() => true).catch(() => false);
+    if (!ready) { fail(where, `${label}: no fresh key within 30s`); continue; }
+
+    if (await page.isHidden('#view-sign')) fail(where, 'the check did not open the signing view');
+    if (!(await page.isHidden('#open-picker'))) fail(where, '"Change" shows in the check');
+    if (!(await page.isVisible('#check-intro'))) fail(where, 'the check has no intro');
+    const checkTx = (await page.textContent('#tx-title')).trim();
+    if (checkTx !== 'Scan the test transaction') fail(where, `step 1 reads "${checkTx}"`);
+    await page.waitForFunction(() => document.getElementById('qr-canvas').width > 50
+      && document.getElementById('seed-canvas').width > 50, { timeout: 8000 })
+      .catch(() => fail(where, `${label}: transaction or seed QR never rendered`));
+
+    const session = await page.evaluate(() => window.__freshSession());
+    let signed;
+    try {
+      signed = signLikeADevice(session.mnemonic, session.psbt_base64, session.network);
+    } catch (e) {
+      fail(where, `${label}: ${e.message}`);
+      continue;
+    }
+    await playIntoFakeCamera(page, signed);
+    await page.click('#scan-start');
+    await page.waitForSelector('#scan-result:not([hidden])', { timeout: 30000 })
+      .catch(() => fail(where, `${label}: no verdict within 30s`));
+    const verdict = ((await page.textContent('#scan-result').catch(() => '')) || '')
+      .replace(/\s+/g, ' ').trim();
+    if (!/signed and verified.*exact match/i.test(verdict)) {
+      fail(where, `${label}: expected an exact match; got "${verdict.slice(0, 140)}"`);
+    } else {
+      console.log(`  fresh ${label.padEnd(15)} -> ${verdict.slice(0, 60)}`);
+    }
+    // One row per input inside the green box, every one a match.
+    const rows = await page.locator('.nonce-check .sig-same').count();
+    if (rows !== session.summary.num_inputs) {
+      fail(where, `${label}: ${rows} matching rows for ${session.summary.num_inputs} inputs`);
+    }
+    await page.evaluate(() => clearInterval(window.__scanTimer));
+    if (SHOT_DIR) {
+      await page.screenshot({ path: `${SHOT_DIR}/fresh-${type}.png`, fullPage: true });
+    }
+  }
+
+  // A tampered device: a new key, input 1 re-signed with another nonce. The alarm
+  // must list that input as different and the others as matching.
+  {
+    const before = await page.evaluate(() => window.__freshSession().id);
+    await page.click('#fresh-new');
+    await page.waitForFunction((b) => window.__freshSession().id !== b, before,
+      { timeout: 30000 }).catch(() => fail(where, 'New key made no new key'));
+    await page.waitForTimeout(500);
+    const session = await page.evaluate(() => window.__freshSession());
+    let tampered = null;
+    try {
+      tampered = signLikeATamperedDevice(session.mnemonic, session.psbt_base64,
+        session.network, session.verify.inputs[0].sighash);
+    } catch (e) {
+      fail(where, `tampered: ${e.message}`);
+    }
+    if (tampered) {
+      await playIntoFakeCamera(page, tampered);
+      await page.click('#scan-start');
+      await page.waitForSelector('#scan-result:not([hidden])', { timeout: 30000 })
+        .catch(() => fail(where, 'tampered: no verdict within 30s'));
+      const verdict = ((await page.textContent('#scan-result').catch(() => '')) || '')
+        .replace(/\s+/g, ' ').trim();
+      const differ = await page.locator('.sig-alarm .sig-differ').count();
+      const same = await page.locator('.sig-alarm .sig-same').count();
+      if (!/signature mismatch/i.test(verdict) || differ !== 1
+          || same !== session.summary.num_inputs - 1) {
+        fail(where, `tampered: expected 1 different and the rest matching; got ${differ} `
+          + `different, ${same} matching, "${verdict.slice(0, 120)}"`);
+      } else {
+        console.log(`  fresh tampered        -> ${verdict.slice(0, 60)}`);
+      }
+      await page.evaluate(() => clearInterval(window.__scanTimer));
+      if (SHOT_DIR) await page.screenshot({ path: `${SHOT_DIR}/fresh-tampered.png`, fullPage: true });
+    }
+  }
+
+  // Leaving the check puts the demo transaction back.
+  await page.click('#home');
+  await page.click('[data-goto="sign"]');
+  await page.waitForTimeout(500);
+  const title = (await page.textContent('#scenario-title')) || '';
+  if (/random test key/i.test(title)) fail(where, 'the demo signing view still shows the test key');
+  // The check's words must not leak into the demo either.
+  if (await page.isVisible('#check-intro')) fail(where, 'the check intro shows on the demo');
+  const demoTx = (await page.textContent('#tx-title')).trim();
+  if (demoTx !== 'Scan the transaction') fail(where, `demo step 1 reads "${demoTx}"`);
+  if (await page.isHidden('#open-picker')) fail(where, '"Change" did not come back after the check');
+  await page.close();
 }
 
 // Lets you smoke-test a custom domain before local DNS has caught up, e.g.
@@ -338,6 +485,19 @@ for (const [name, viewport, dpr] of VIEWPORTS) {
     fail(name, `landing should lead with signing, leads with "${lead}"`);
   }
   if (!(await page.isVisible('.banner-logo'))) fail(name, 'banner logo missing');
+  // Two labeled groups: the four demo activities, then the device check on its own.
+  const groups = await page.$$eval('.landing-group', (els) => els.map((g) => ({
+    title: g.querySelector('.landing-group-title')?.textContent.trim() || '',
+    gotos: Array.from(g.querySelectorAll('[data-goto]'), (b) => b.dataset.goto),
+  })));
+  const demo = groups.find((g) => /^demo$/i.test(g.title));
+  const testing = groups.find((g) => /testing/i.test(g.title));
+  if (!demo || demo.gotos.join() !== 'sign,seed,verify,message') {
+    fail(name, `Demo group should hold the four activities, has ${JSON.stringify(demo)}`);
+  }
+  if (!testing || testing.gotos.join() !== 'check') {
+    fail(name, `testing group should hold the check only, has ${JSON.stringify(testing)}`);
+  }
 
   await page.click('[data-goto="sign"]');
   await page.waitForTimeout(600);

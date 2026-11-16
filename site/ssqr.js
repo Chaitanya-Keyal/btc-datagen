@@ -149,6 +149,30 @@ export class UrPsbtDecoder {
   }
 }
 
+/* What a UR fountain over this PSBT needs before it starts: how many pure
+ * fragments there are, and the largest symbol it will ever show, so the canvas can
+ * lock one module scale for the whole animation. The browser's twin of
+ * ur_runtime_spec in tools/build_site.py, for a PSBT made in the page (the
+ * fresh-key mode); the round-trip test holds the two to the same answer.
+ *
+ * The ceiling is measured by rasterizing a real part at `ceilingSeq`, and part 1
+ * too, because a single-part UR has no fountain header and is the smaller one. */
+export function urRuntimeSpec(psbtBytes, maxFragment, minFragment, ceilingSeq) {
+  const first = new UrPsbtEncoder(psbtBytes, maxFragment);
+  try {
+    const head = qrEncode(first.next().toUpperCase());
+    const spec = { runtime: true, max_fragment: maxFragment, min_fragment: minFragment,
+                   count: 1, modules: head.m, version: head.v };
+    if (first.isSinglePart) return spec;
+    const far = new UrPsbtEncoder(psbtBytes, maxFragment, ceilingSeq);
+    try {
+      const tail = qrEncode(far.next().toUpperCase());
+      return { ...spec, count: first.seqLen, modules: Math.max(head.m, tail.m),
+               version: Math.max(head.v, tail.v) };
+    } finally { far.free(); }
+  } finally { first.free(); }
+}
+
 /* ---------- QR encoding --------------------------------------------------- */
 
 /* Rasterize to a bare module matrix: {m, v, bits}, the same shape the Python
@@ -162,6 +186,14 @@ export function qrEncode(text) {
   const bitsPtr = mod._ssqr_qr_bits();
   const bytes = (m * m + 7) >> 3;
   return { m, v: mod._ssqr_qr_version(), bits: mod.HEAPU8.slice(bitsPtr, bitsPtr + bytes) };
+}
+
+/** The same, for raw bytes in byte mode (a CompactSeedQR's entropy). */
+export function qrEncodeBytes(bytes) {
+  const m = withBytes(bytes, (ptr, len) => mod._ssqr_qr_encode_bytes(ptr, len));
+  if (!m) throw new Error(`QR encode failed for ${bytes.length} bytes`);
+  const bitsPtr = mod._ssqr_qr_bits();
+  return { m, v: mod._ssqr_qr_version(), bits: mod.HEAPU8.slice(bitsPtr, bitsPtr + ((m * m + 7) >> 3)) };
 }
 
 /* ---------- QR decoding (k_quirc) ----------------------------------------- */

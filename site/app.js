@@ -97,6 +97,32 @@ function markerFor(seedName) {
   return MARKER_COLORS[MARKER_FALLBACK[h % MARKER_FALLBACK.length]];
 }
 
+/* Relative luminance (WCAG) of an HSL color, 0 for black to 1 for white. */
+function hslLuminance({ h, s, l }) {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(0) + 0.7152 * f(8) + 0.0722 * f(4);
+}
+
+/* A random test key gets a random pen: a new color every time is something you
+ * can see that says the key is new too. Any hue at least 60 degrees from the last
+ * key's, so "New key" always visibly changes it, then darkened until it is no
+ * lighter than the lightest pen above, since a decoder binarizes on luminance and
+ * a yellow at the same HSL lightness as the blue would be far brighter. */
+const MAX_MARKER_LUMINANCE = Math.max(...Object.values(MARKER_COLORS).map(hslLuminance));
+function randomMarker(previous) {
+  const r = crypto.getRandomValues(new Uint32Array(2));
+  // Uniform over the hues that are far enough from the previous one.
+  const h = previous ? (previous.h + 60 + (r[0] % 241)) % 360 : r[0] % 360;
+  const marker = { h, s: 45 + (r[1] % 16), l: 34 };   // a colored pen, not a gray
+  while (marker.l > 18 && hslLuminance(marker) > MAX_MARKER_LUMINANCE) marker.l -= 1;
+  return marker;
+}
+
 /* Paper grain, built once into a small tile and repeated.
  *
  * Regenerating noise per draw would be wasteful, and doing it per pixel on a
@@ -305,7 +331,12 @@ function isRegistrationModule(x, y, size) {
   return finder || alignment;
 }
 
-const VIEWS = ['home', 'sign', 'seed', 'verify', 'message'];
+const VIEWS = ['home', 'sign', 'seed', 'verify', 'message', 'check'];
+
+/* The fresh-key check is the signing flow with a key made on the spot, so it
+   reuses the signing view's markup rather than duplicating it. */
+const SECTIONS = ['home', 'sign', 'seed', 'verify', 'message'];
+const sectionFor = (mode) => (mode === 'check' ? 'sign' : mode);
 
 const state = {
   index: null,
@@ -332,6 +363,9 @@ const state = {
   // enabled in the picker. Each hardening PR (#1013, #1032, ...) has its own
   // toggle so the sets stay isolated. Holds the set of enabled PR ids.
   showPR: new Set(),
+  // The fresh-key check (mode `check`): the current session and the seed sheet
+  // built from it, and the demo transaction to put back on the way out.
+  fresh: { scriptType: 'P2WPKH', session: null, entry: null, seed: null, demo: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -357,7 +391,7 @@ function prepare(payload) {
     count: payload.count,
     maxModules: payload.max_modules,
     maxVersion: payload.max_version,
-    frames: payload.frames.map((f) => ({ m: f.m, v: f.v, bits: unpack(f.b) })),
+    frames: payload.frames.map((f) => ({ m: f.m, v: f.v, bits: f.bits || unpack(f.b) })),
   };
 }
 
@@ -860,18 +894,26 @@ function densityFor(fmt) {
   return state.density[fmt];
 }
 
+/* The format actually in play. A fresh key's PSBT is made in the page, and only
+   UR is generated at runtime (BBQR ships as prebuilt frames), so it plays as UR
+   whatever the sticky choice for the demo transactions is. */
+function activeFormat() {
+  return state.scenario.qr[state.format] ? state.format : 'ur';
+}
+
 function renderFormatControls() {
-  const fmts = Object.keys(state.index.formats);
+  const fmts = Object.keys(state.index.formats).filter((f) => state.scenario.qr[f]);
   buildSegmented($('format-seg'),
     fmts.map((f) => ({ value: f, label: formatSpec(f).label })),
-    state.format,
+    activeFormat(),
     (v) => { state.format = v; loadQr(); });
 
-  const spec = formatSpec(state.format);
+  const fmt = activeFormat();
+  const spec = formatSpec(fmt);
   buildSegmented($('density-seg'),
     spec.densities.map((d) => ({ value: d, label: state.index.density_labels[d] })),
-    densityFor(state.format),
-    (v) => { state.density[state.format] = v; loadQr(); });
+    densityFor(fmt),
+    (v) => { state.density[fmt] = v; loadQr(); });
 
   $('qr-note').textContent = spec.note;
 }
@@ -888,8 +930,8 @@ function loadSsqr() {
 }
 
 async function loadQr() {
-  const density = densityFor(state.format);
-  const ref = state.scenario.qr[state.format][density];
+  const fmt = activeFormat();
+  const ref = state.scenario.qr[fmt][densityFor(fmt)];
   renderFormatControls();
 
   // Release the previous fountain's encoder before replacing it; WASM memory is
@@ -1002,10 +1044,18 @@ async function renderSeedStep() {
 
   const multi = seeds.length > 1;
   // Stage direction: what the person would actually be doing at this point.
-  $('seed-hint').textContent = multi
-    ? `You retrieve your handmade SeedQR. ${state.scenario.threshold}-of-${seeds.length} `
-      + `multisig, sign with any ${state.scenario.threshold}, one at a time.`
-    : 'You retrieve your handmade SeedQR.';
+  // The check is for people on their own and new to this, so it says what a SeedQR
+  // is before showing one: the demo has someone at the table to explain.
+  $('seed-hint').textContent = state.scenario.fresh
+    ? 'A SeedQR is a seed phrase drawn as a QR code. Scanning one is much faster and '
+      + 'easier than typing all 12 or 24 words into the SeedSigner. A real SeedQR is '
+      + 'always drawn by hand. This page simulates a hand-drawn SeedQR on paper. It '
+      + 'holds your test key: use it for this test only, never for real bitcoin. '
+      + 'Scan it with your SeedSigner.'
+    : multi
+      ? `You retrieve your handmade SeedQR. ${state.scenario.threshold}-of-${seeds.length} `
+        + `multisig, sign with any ${state.scenario.threshold}, one at a time.`
+      : 'You retrieve your handmade SeedQR.';
 
   const chooser = $('seed-chooser');
   chooser.hidden = !multi;
@@ -1017,16 +1067,17 @@ async function renderSeedStep() {
     chooser.innerHTML = '';
   }
 
-  const entry = state.index.seeds.find((s) => s.name === state.seedName);
-  const data = await getJSON(entry.file);
+  const data = state.scenario.fresh
+    ? state.fresh.seed
+    : await getJSON(state.index.seeds.find((s) => s.name === state.seedName).file);
 
   buildSegmented($('seedqr-seg'), [
     { value: 'compact', label: 'CompactSeedQR' },
     { value: 'standard', label: `SeedQR (${data.words}w)` },
   ], state.seedVariant, (v) => { state.seedVariant = v; renderSeedStep(); });
 
-  seedPlayer.label = possessive(data.name);
-  seedPlayer.marker = markerFor(data.name);
+  seedPlayer.label = data.label || possessive(data.name);
+  seedPlayer.marker = data.marker || markerFor(data.name);
   seedPlayer.fingerprint = data.master_fingerprint.toUpperCase();
   seedPlayer.setPayload(prepare(data[state.seedVariant].qr));
 
@@ -1310,6 +1361,53 @@ function nameList(names) {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+/* The check's signatures, one row per input, for inside its result box. Most
+   people picture a transaction as having one signature, so "every signature"
+   means nothing until they can see there are several. The device's own review
+   screen labels them "input 1" and "input 2", so the rows use the same words. */
+function checkSigList() {
+  const rows = collected.inputs.map((perInput, i) => {
+    const sig = [...perInput.values()][0];
+    if (!sig) {
+      return `<li class="sig-row sig-missing"><span class="sig-mark">·</span>`
+        + `Input ${i + 1}<span class="sig-hex">not signed yet</span></li>`;
+    }
+    const same = sig.identical === true;
+    const rs = sigCore(sig);
+    const short = `${rs.slice(0, 8)}…${rs.slice(-8)}`;
+    return `<li class="sig-row ${same ? 'sig-same' : 'sig-differ'}">`
+      + `<span class="sig-mark">${same ? '✓' : '✗'}</span>Input ${i + 1}`
+      + `<span class="sig-hex">${short}</span></li>`;
+  });
+  return `<ul class="sig-list">${rows.join('')}</ul>`;
+}
+
+/* A signature's own bytes, r then s, as hex. A DER signature opens with the same
+   framing every time ("30440220") and ends with the same sighash byte, so showing
+   those would make three different signatures look alike at a glance. */
+function sigCore(sig) {
+  if (sig.scheme === 'schnorr') return sig.sigHex.slice(0, 128);
+  const b = sig.sigHex.match(/../g).map((x) => parseInt(x, 16));
+  const rLen = b[3];
+  const sLen = b[5 + rLen];
+  const int32 = (bytes) => bytes.map((x) => x.toString(16).padStart(2, '0')).join('')
+    .replace(/^(00)+/, '').padStart(64, '0');
+  return int32(b.slice(4, 4 + rLen)) + int32(b.slice(6 + rLen, 6 + rLen + sLen));
+}
+
+/* Small counts as words: the check spells everything out. */
+const NUM_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+  'eight', 'nine', 'ten'];
+const numWord = (n) => NUM_WORDS[n] || String(n);
+
+/* "This transaction has three inputs, each of which requires its own signature." */
+function inputsSentence(n) {
+  return n === 1
+    ? 'This transaction has one input, which requires one signature.'
+    : `This transaction has ${numWord(n)} inputs, each of which requires its own `
+      + 'signature.';
+}
+
 function renderScanResult(report) {
   const added = report.txMatches ? collectSignatures(report) : 0;
 
@@ -1359,10 +1457,19 @@ function renderScanResult(report) {
     cls = 'scan-bad scan-alarm';
     mark = '✗';
     headline = 'Signature mismatch';
-    detail = `${differ === 1 ? 'One signature is' : `${differ} signatures are`} valid,
-      but not what a correct SeedSigner makes with this key. A device that picks
-      its own nonces can leak its seed through them (the Dark Skippy attack). Do
-      not use this device with real funds until you know why.`;
+    // The check is read by people on their own and new to this, so it says the
+    // same thing in plain words, without "nonce" or the attack's name.
+    const n = report.inputs.length;
+    detail = state.scenario.fresh
+      ? `${inputsSentence(n)} ${n === 1
+        ? 'Your SeedSigner\'s signature is valid, but it is not'
+        : `All ${numWord(n)} of your SeedSigner's signatures are valid, but ${differ === n
+          ? 'none of them is' : `${numWord(differ)} ${differ === 1 ? 'is' : 'are'} not`}`}
+        what an honest SeedSigner makes with this key:`
+      : `${differ === 1 ? 'One signature is' : `${differ} signatures are`} valid,
+        but not what a correct SeedSigner makes with this key. A device that picks
+        its own nonces can leak its seed through them (the Dark Skippy attack). Do
+        not use this device with real funds until you know why.`;
   } else if (report.anyInvalid) {
     cls = 'scan-bad';
     mark = '✗';
@@ -1371,17 +1478,16 @@ function renderScanResult(report) {
   } else if (enough) {
     cls = 'scan-ok';
     mark = '✓';
-    headline = 'Signed, and the signature is real';
-    // The headline already makes the verification claim, so the body closes the
-    // loop instead: this is the point where a real transfer ends, and without
-    // saying so the demo stops one step short of the thing it is explaining.
+    headline = 'Signed and verified';
     const cosigners = state.scenario.signing_seeds.length;
     // The headline already makes the verification claim, so the body closes the
     // loop instead: this is where a real transfer ends, and without saying so
     // the demo stops one step short of the thing it is explaining. No "but this
     // one is fake" line, the sticky banner and the transaction summary both
-    // carry that, and a third copy is the kind of text nobody reads.
-    detail = `${threshold > 1
+    // carry that, and a third copy is the kind of text nobody reads. The check's
+    // transaction is never meant to go anywhere, so its body is just the signer:
+    // the exact-match box below is the result that matters there.
+    detail = state.scenario.fresh ? `Signed by ${who}.` : `${threshold > 1
       ? `${who} together complete the ${threshold}-of-${cosigners}. `
       : (who ? `Signed by ${who}. ` : '')}After scanning in the signature, your
       wallet software would then broadcast the transaction to the network.`;
@@ -1420,15 +1526,38 @@ function renderScanResult(report) {
   // every signature collected, and two counts that disagree for a 2-of-3 signed
   // by all three cosigners would undercut the one thing it is here to say.
   const exact = report.txMatches && !report.anyInvalid && compared > 0 && differ === 0;
-  const callout = exact
-    ? `<div class="nonce-check">
+  // The check lists the signatures themselves, one per input, inside the verdict,
+  // and then the counts table below would only repeat it.
+  const check = state.scenario.fresh;
+  const n = report.inputs.length;
+  let callout = '';
+  if (exact && check) {
+    const all = compared === n;
+    callout = `<div class="nonce-check">
          <strong>✓ Exact match</strong>
-         <p>${compared === 1 ? 'Identical' : 'Every signature is identical'} to the one
-           this page computed with the same key. The device's nonce came from the
+         <p>${inputsSentence(n)} ${all
+           ? (n === 1 ? 'The signature is' : `All ${numWord(n)} signatures are`)
+           : `The ${numWord(compared)} ${compared === 1 ? 'signature' : 'signatures'} so `
+             + `far ${compared === 1 ? 'is' : 'are'}`} exactly what this test expected:</p>
+         ${checkSigList()}
+         ${all ? '<p>Your SeedSigner passed this test.</p>' : ''}
+       </div>`;
+  } else if (exact) {
+    callout = `<div class="nonce-check">
+         <strong>✓ Exact match</strong>
+         <p>${compared === 1 ? 'Identical' : 'Every signature is identical'} to the
+           one this page computed with the same key. The device's nonce came from the
            key and the transaction alone, so nothing is hidden in
            ${compared === 1 ? 'it' : 'them'}.</p>
-       </div>`
-    : '';
+       </div>`;
+  } else if (check && report.txMatches && differ > 0) {
+    callout = `<div class="sig-alarm">
+         ${checkSigList()}
+         <p>A tampered SeedSigner could be using ${differ === 1 ? 'that signature'
+           : 'those signatures'} to expose your seed. Do not use this SeedSigner with
+           real bitcoin until you know why.</p>
+       </div>`;
+  }
 
   // The transaction id sits OUTSIDE the table. In it, the numeric column asks to
   // be as narrow as its content while a 64-character txid asks for everything
@@ -1437,7 +1566,8 @@ function renderScanResult(report) {
   // handles both a short right-aligned number and a long identifier.
   const footer = `<p class="scan-txid"><span>Transaction</span>${truncatedAddr(report.txid)}</p>`;
 
-  scanResultBox(cls, mark, headline, detail, rows, footer, 'Scan again', callout);
+  scanResultBox(cls, mark, headline, detail, check && callout ? '' : rows, footer,
+    'Scan again', callout);
 }
 
 function showScanError(message) {
@@ -1787,11 +1917,14 @@ function modeFromUrl(params) {
 
 async function setMode(mode, { push = true } = {}) {
   if (!VIEWS.includes(mode)) mode = 'home';
+  const leaving = state.mode;
   lockFolds();
   resetScanUi();
   state.mode = mode;
-  VIEWS.forEach((v) => { $(`view-${v}`).hidden = v !== mode; });
+  SECTIONS.forEach((v) => { $(`view-${v}`).hidden = v !== sectionFor(mode); });
 
+  if (mode === 'check') await enterCheck();
+  else if (leaving === 'check') await leaveCheck();
   if (mode === 'seed') await renderOnlySeedView();
   if (mode === 'verify') await renderVerifyView();
   if (mode === 'message') await renderMessageView();
@@ -1818,8 +1951,21 @@ async function onPopState() {
 async function selectScenario(id, { updateUrl = true } = {}) {
   const scenario = state.index.scenarios.find((s) => s.id === id);
   if (!scenario) return;
+  await applyScenario(scenario, await getJSON(`data/scenario/${id}.json`));
+
+  // Replace, never push: picking a different transaction is a parameter change
+  // within the signing view, so Back should return to the menu rather than walk
+  // backwards through every transaction that was browsed. And on the landing
+  // page this writes nothing at all, syncUrl only emits `tx` when the signing
+  // view is the one actually showing.
+  if (updateUrl) syncUrl();
+}
+
+/* Put a transaction on the signing view: a shipped scenario, or a fresh key's
+   session, which has the same shape. */
+async function applyScenario(scenario, data) {
   state.scenario = scenario;
-  state.scenarioData = await getJSON(`data/scenario/${id}.json`);
+  state.scenarioData = data;
   lockFolds();
   // A result from the previous transaction would be about a different txid, and
   // signatures collected for it mean nothing here. Note this is NOT in
@@ -1838,13 +1984,146 @@ async function selectScenario(id, { updateUrl = true } = {}) {
   await renderSeedStep();
   await renderDescriptorStep();
   renderFlow();
+}
 
-  // Replace, never push: picking a different transaction is a parameter change
-  // within the signing view, so Back should return to the menu rather than walk
-  // backwards through every transaction that was browsed. And on the landing
-  // page this writes nothing at all, syncUrl only emits `tx` when the signing
-  // view is the one actually showing.
-  if (updateUrl) syncUrl();
+/* ---------- the fresh-key check -------------------------------------------- */
+
+/* "Check my SeedSigner": the signing flow, but with a key made in this browser on
+   the spot, spending made-up coins with random amounts and outpoints. The demo
+   seeds and transactions are published and fixed, so firmware written to dodge
+   the nonce check could recognize them; a fresh key gives it nothing to
+   recognize. embit itself builds the session (site/freshkey.js), and the scan
+   step checks the device's signatures exactly as it does for a demo seed. */
+
+const FRESH_TYPES = [
+  { value: 'P2WPKH', label: 'Native SegWit' },
+  { value: 'P2TR', label: 'Taproot' },
+  { value: 'P2SH-P2WPKH', label: 'Nested' },
+  { value: 'P2PKH', label: 'Legacy' },
+];
+
+let freshkeyPromise = null;
+function loadFreshkey() {
+  if (!freshkeyPromise) {
+    freshkeyPromise = import('./freshkey.js');
+    freshkeyPromise.catch(() => { freshkeyPromise = null; });
+  }
+  return freshkeyPromise;
+}
+
+const bytesFromHex = (h) => Uint8Array.from(h.match(/../g), (b) => parseInt(b, 16));
+
+/* A session as the scenario-index entry the signing flow reads. */
+function freshEntry(ssqr, s) {
+  const rt = state.index.ur_runtime;
+  const raw = unpack(s.psbt_base64);
+  const ur = {};
+  for (const d of state.index.formats.ur.densities) {
+    ur[d] = ssqr.urRuntimeSpec(raw, rt.max_fragment[d], rt.min_fragment, rt.layout_ceiling_seq);
+  }
+  return {
+    id: s.id,
+    fresh: true,
+    title: `Random test key · ${s.script_label}`,
+    blurb: 'The key, the amounts, and the coins being spent were all made up just '
+      + 'now, so your device cannot have seen any of them before.',
+    script_type: s.script_type,
+    script_label: s.script_label,
+    network: s.network,
+    num_inputs: s.summary.num_inputs,
+    signing_seeds: [s.seed_name],
+    threshold: 1,
+    needs_descriptor: false,
+    summary: s.summary,
+    summary_note: null,
+    qr: { ur },
+    test: false,
+  };
+}
+
+/* A session's seed sheet, in the shape a shipped seed file has. */
+function freshSeed(ssqr, s) {
+  const single = (f) => ({ count: 1, max_modules: f.m, max_version: f.v, frames: [f] });
+  return {
+    name: s.seed_name,
+    label: 'Test key',
+    marker: randomMarker(state.fresh.seed && state.fresh.seed.marker),
+    mnemonic: s.mnemonic,
+    words: s.words,
+    master_fingerprint: s.master_fingerprint,
+    standard: { payload: s.standard_digits, qr: single(ssqr.qrEncode(s.standard_digits)) },
+    compact: { payload_hex: s.entropy_hex,
+               qr: single(ssqr.qrEncodeBytes(bytesFromHex(s.entropy_hex))) },
+  };
+}
+
+let freshToken = 0;
+async function newFreshKey() {
+  const token = ++freshToken;
+  $('scenario-title').textContent = 'Making a random test key…';
+  $('fresh-new').disabled = true;
+  try {
+    const [fk, ssqr] = await Promise.all([loadFreshkey(), loadSsqr()]);
+    const session = await fk.newSession({ scriptType: state.fresh.scriptType, network: 'main' });
+    if (token !== freshToken || state.mode !== 'check') return;   // superseded
+    state.fresh.session = session;
+    state.fresh.entry = freshEntry(ssqr, session);
+    state.fresh.seed = freshSeed(ssqr, session);
+    await applyScenario(state.fresh.entry, session);
+  } catch (err) {
+    console.error(err);
+    if (token === freshToken) $('scenario-title').textContent = `Could not make a key: ${err.message}`;
+  } finally {
+    if (token === freshToken) $('fresh-new').disabled = false;
+  }
+}
+
+const TX_HINT = 'Wallet software like Sparrow builds the transaction and shows it as a QR.';
+
+function setCheckChrome(on) {
+  $('open-picker').hidden = on;
+  $('fresh-new').hidden = !on;
+  $('fresh-controls').hidden = !on;
+  $('check-intro').hidden = !on;
+  // Here the page, not a wallet, made the transaction up, and the steps say "test"
+  // so nobody takes either for the real thing.
+  $('tx-title').textContent = on ? 'Scan the test transaction' : 'Scan the transaction';
+  $('tx-hint').textContent = on
+    ? 'This is a new, random, fake transaction. Only the test key in step 2 can sign '
+      + 'it. There is no real bitcoin in this transaction. The test key does not '
+      + 'secure any bitcoin either. Scan it with your SeedSigner.'
+    : TX_HINT;
+  $('seed-title').textContent = on ? 'Load the test key' : 'Load the seed';
+}
+
+/* The script-type choice. Switching makes a new key for the new type. */
+function renderFreshSeg() {
+  buildSegmented($('fresh-seg'), FRESH_TYPES, state.fresh.scriptType, (v) => {
+    if (v === state.fresh.scriptType) return;
+    state.fresh.scriptType = v;
+    renderFreshSeg();
+    resetScanUi();
+    newFreshKey();
+  });
+}
+
+async function enterCheck() {
+  if (state.scenario && !state.scenario.fresh) {
+    state.fresh.demo = { entry: state.scenario, data: state.scenarioData };
+  }
+  setCheckChrome(true);
+  renderFreshSeg();
+  // Coming back to the check (Back, or the menu) shows the same key again; only
+  // "New key" or another script type replaces it.
+  if (state.fresh.session) await applyScenario(state.fresh.entry, state.fresh.session);
+  else await newFreshKey();
+}
+
+async function leaveCheck() {
+  setCheckChrome(false);
+  freshToken++;                 // drop a key still being made
+  const demo = state.fresh.demo;
+  if (demo) await applyScenario(demo.entry, demo.data);
 }
 
 /* ---------- picker -------------------------------------------------------- */
@@ -2070,6 +2349,7 @@ function wireControls() {
   });
 
   $('open-picker').addEventListener('click', openPicker);
+  $('fresh-new').addEventListener('click', () => { resetScanUi(); newFreshKey(); });
   $('picker-close').addEventListener('click', closePicker);
   $('picker').addEventListener('click', (e) => { if (e.target.id === 'picker') closePicker(); });
   // The per-PR test toggles are built and wired in renderPickerToggles().
@@ -2192,6 +2472,10 @@ async function main() {
   // do nothing.
   await setMode(modeFromUrl(params), { push: false });
 }
+
+// Test hook: the smoke test signs the fresh key's transaction the way a device
+// would, so it needs the session the page made.
+window.__freshSession = () => state.fresh.session;
 
 // Test hook: lets the scannability harness force a render style on the seed QRs.
 window.__tuneHandmade = (patch) => {

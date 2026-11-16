@@ -27,28 +27,46 @@
 <main id="app">
 
   <!-- ============ LANDING ============ -->
-  <!-- One warning line and four buttons. Nobody reads body copy on a phone at a
-       demo table, and someone may only have the device for 20 seconds, so this
-       is one glance and one tap, with no prose to wade through. -->
+  <!-- One warning line and two labeled groups of buttons. Nobody reads body copy
+       on a phone at a demo table, and someone may only have the device for 20
+       seconds, so this is one glance and one tap, with no prose to wade through.
+       The group headings are the only words that are not buttons: they say which
+       buttons are the demo and which one is for testing your own device. -->
   <section id="view-home">
     <p class="view-intro-warn">
       Fake data, public demo keys. Never use with real bitcoin.
     </p>
 
-    <div class="activities">
-      <button type="button" class="activity activity-lead" data-goto="sign">
-        Sign a transaction
-      </button>
-      <button type="button" class="activity" data-goto="seed">
-        Load a seed
-      </button>
-      <button type="button" class="activity" data-goto="verify">
-        Verify an address
-      </button>
-      <button type="button" class="activity" data-goto="message">
-        Sign a message
-      </button>
-    </div>
+    <section class="landing-group" aria-labelledby="group-demo">
+      <h2 class="landing-group-title" id="group-demo">Demo</h2>
+      <div class="activities">
+        <button type="button" class="activity activity-lead" data-goto="sign">
+          Sign a transaction
+        </button>
+        <button type="button" class="activity" data-goto="seed">
+          Load a seed
+        </button>
+        <button type="button" class="activity" data-goto="verify">
+          Verify an address
+        </button>
+        <button type="button" class="activity" data-goto="message">
+          Sign a message
+        </button>
+      </div>
+    </section>
+
+    <!-- Not a demo: vetting a device for nonce-based seed leaks (Dark Skippy). A
+         key made on the spot, so firmware written to recognize this site's
+         published seeds has nothing to recognize. -->
+    <section class="landing-group" aria-labelledby="group-test">
+      <h2 class="landing-group-title" id="group-test">Testing and verification</h2>
+      <div class="activities">
+        <button type="button" class="activity activity-lead activity-check" data-goto="check">
+          Check my SeedSigner
+          <small>Tests its signatures with a random test key</small>
+        </button>
+      </div>
+    </section>
   </section>
 
   <!-- ============ SIGN A TRANSACTION ============ -->
@@ -57,11 +75,35 @@
        be on screen, not below a heading and a paragraph. -->
   <section id="view-sign" hidden>
 
+    <!-- The check only. Unlike the demo, this is something we point people to on
+         their own, many of them new to all of this, so it says why it matters
+         before asking them to scan anything. -->
+    <section class="check-intro" id="check-intro" hidden>
+      <h2>Why check your SeedSigner?</h2>
+      <p>A SeedSigner running tampered software can use its signatures to secretly
+        expose your seed. Whoever tampered with it can then read your seed off the
+        blockchain and take your bitcoin.</p>
+      <p>An honest SeedSigner follows a fixed recipe. That means for a given key and
+        transaction, this test can calculate the exact signature your SeedSigner
+        should make. The test then compares that expected signature with your
+        SeedSigner's actual signature.</p>
+      <p>If the actual signature does not match the expected signature, that is
+        evidence your SeedSigner may have been tampered with.</p>
+      <p>The test creates a new random test key for you each time, so a tampered
+        device can't recognize it as a test.</p>
+      <h3>Is it safe to run?</h3>
+      <p>Yes. For this test, the only key to load into your SeedSigner is the test
+        key. Your real seed is not part of this test. The test key is used once
+        and thrown away. It has never secured any bitcoin. The test transaction is
+        fake too. So even a tampered SeedSigner has nothing of value to expose.</p>
+      <p>Nothing from the test leaves your browser.</p>
+    </section>
+
     <!-- STEP 1, the transaction -->
     <section class="step" id="step-tx">
-      <h2 class="step-title"><span class="step-num">1</span> Scan the transaction</h2>
-      <p class="step-hint">Wallet software like Sparrow builds the transaction and
-        shows it as a QR.</p>
+      <h2 class="step-title"><span class="step-num">1</span> <span id="tx-title">Scan the transaction</span></h2>
+      <p class="step-hint" id="tx-hint">Wallet software like Sparrow builds the
+        transaction and shows it as a QR.</p>
 
       <!-- Which transaction this is, and the way to pick another, sit directly
            above the QR: the name labels the thing below it, and "Change" is
@@ -70,9 +112,15 @@
            scrolled past. -->
       <div class="scenario-head">
         <div class="scenario-head-text">
-          <h1 id="scenario-title">—</h1>
+          <h1 id="scenario-title">…</h1>
         </div>
         <button id="open-picker" class="btn btn-ghost">Change<span aria-hidden="true"> ▾</span></button>
+        <button id="fresh-new" class="btn btn-ghost" hidden>New key</button>
+      </div>
+
+      <!-- The check only: which kind of wallet the random test key is. -->
+      <div class="fresh-controls" id="fresh-controls" hidden>
+        <div class="segmented" id="fresh-seg"></div>
       </div>
 
       <!-- Shown only for a PR test scenario: what to load and what the device
@@ -84,7 +132,7 @@
           <canvas id="qr-canvas" aria-label="Transaction QR code"></canvas>
         </div>
         <div class="qr-meta">
-          <span id="qr-progress">—</span>
+          <span id="qr-progress">…</span>
           <button id="qr-expand" class="btn btn-tiny">Fullscreen</button>
         </div>
       </div>
@@ -127,7 +175,7 @@
 
     <!-- STEP 2, the seed -->
     <section class="step" id="step-seed">
-      <h2 class="step-title"><span class="step-num">2</span> Load the seed</h2>
+      <h2 class="step-title"><span class="step-num">2</span> <span id="seed-title">Load the seed</span></h2>
       <p class="step-hint" id="seed-hint"></p>
 
       <div class="chooser" id="seed-chooser"></div>
