@@ -9,10 +9,12 @@
  *
  *   1. the returned PSBT's global unsigned transaction is BYTE-IDENTICAL to the
  *      one we sent (so the device did not sign some other transaction), and
- *   2. each signature verifies, on the secp256k1 curve, against the sighash
- *      digest for that input, a digest computed at build time by embit and
- *      shipped alongside the scenario (see verification_data in
- *      tools/build_site.py).
+ *   2. each signature verifies against the sighash digest for that input, a
+ *      digest computed at build time by embit and shipped alongside the
+ *      scenario (see verification_data in tools/build_site.py). Verification
+ *      is libsecp256k1 compiled into the WASM module (site/ssqr.js), the
+ *      library Bitcoin Core verifies with, not a JavaScript implementation of
+ *      the curve.
  *
  * The digest is precomputed rather than derived in the browser because deriving
  * it means implementing BIP143, BIP341 and the legacy algorithm in JavaScript:
@@ -32,7 +34,7 @@
  * signs is still perfectly valid, which is exactly why only this comparison
  * can catch it.
  */
-import * as secp from './vendor/noble-secp256k1.js';
+import { ready, ecdsaVerify, schnorrVerify } from './ssqr.js';
 
 const PSBT_MAGIC = [0x70, 0x73, 0x62, 0x74, 0xff];   // "psbt\xff"
 
@@ -158,41 +160,11 @@ export async function txidOf(unsignedTx) {
 
 /* ---------- signatures ---------------------------------------------------- */
 
-/* DER -> the 64-byte compact form noble wants.
- *
- * @noble/secp256k1 v3 dropped DER support (it lives in noble-curves now), and
- * pulling in a second library to reshape 70 bytes would be silly. Bitcoin
- * signatures are strict DER: 0x30 <len> 0x02 <rlen> r 0x02 <slen> s, with r and
- * s big-endian, minimally encoded, and carrying a leading 0x00 when the high
- * bit would otherwise make them look negative. */
-function derToCompact(der) {
-  if (der[0] !== 0x30) throw new Error('signature is not DER');
-  let i = 2;
-  const readInt = () => {
-    if (der[i++] !== 0x02) throw new Error('malformed DER integer');
-    const len = der[i++];
-    const value = der.subarray(i, i + len);
-    i += len;
-    return value;
-  };
-  const r = readInt();
-  const s = readInt();
-  const out = new Uint8Array(64);
-  const place = (v, offset) => {
-    const trimmed = v[0] === 0 ? v.subarray(1) : v;
-    if (trimmed.length > 32) throw new Error('DER integer too long');
-    out.set(trimmed, offset + 32 - trimmed.length);
-  };
-  place(r, 0);
-  place(s, 32);
-  return out;
-}
-
 /* SIGHASH_ALL. Anything else and our precomputed digest describes a different
  * commitment, so the check would fail for a reason worth naming. */
 const SIGHASH_ALL = 0x01;
 
-async function checkInput(inp, expected, taproot) {
+function checkInput(inp, expected, taproot) {
   const results = [];
 
   if (taproot) {
@@ -207,8 +179,11 @@ async function checkInput(inp, expected, taproot) {
     if (flagged !== 0x00) {
       note = `sighash flag 0x${flagged.toString(16)}, expected DEFAULT`;
     } else {
-      valid = await secp.schnorr.verifyAsync(sig, bytesFromHex(expected.sighash),
-                                             bytesFromHex(key.pubkey));
+      try {
+        valid = schnorrVerify(bytesFromHex(expected.sighash), bytesFromHex(key.pubkey), sig);
+      } catch (e) {
+        note = e.message;
+      }
     }
     results.push({ ...key, valid, note, scheme: 'schnorr',
                    identical: sameAsReference(inp.tapKeySig, key) });
@@ -227,10 +202,8 @@ async function checkInput(inp, expected, taproot) {
       note = 'signed by a key this wallet does not contain';
     } else {
       try {
-        valid = secp.verify(derToCompact(sigBytes.subarray(0, sigBytes.length - 1)),
-                            bytesFromHex(expected.sighash),
-                            bytesFromHex(key.pubkey),
-                            { prehash: false });
+        valid = ecdsaVerify(bytesFromHex(expected.sighash), bytesFromHex(key.pubkey),
+                            sigBytes.subarray(0, sigBytes.length - 1));
       } catch (e) {
         note = e.message;
       }
@@ -255,6 +228,7 @@ function sameAsReference(sigBytes, key) {
  * Never throws for a *failed* check: a wrong or unsigned PSBT is a result, not
  * an exception. It does throw if the bytes are not a PSBT at all. */
 export async function verifySignedPsbt(psbtBytes, expected) {
+  await ready();
   const parsed = parsePsbt(psbtBytes);
   const txMatches = bytesEqual(parsed.unsignedTx, bytesFromHex(expected.unsigned_tx));
   const txid = await txidOf(parsed.unsignedTx);
@@ -263,7 +237,7 @@ export async function verifySignedPsbt(psbtBytes, expected) {
   for (let i = 0; i < expected.inputs.length; i++) {
     const parsedInput = parsed.inputs[i];
     const sigs = parsedInput
-      ? await checkInput(parsedInput, expected.inputs[i], expected.taproot)
+      ? checkInput(parsedInput, expected.inputs[i], expected.taproot)
       : [];
     inputs.push({
       index: i,

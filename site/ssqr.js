@@ -9,7 +9,7 @@
  * on every frame.
  *
  * An ES module rather than a global, so the parity test in node and the site in
- * the browser load exactly the same file — the site reaches it from the classic
+ * the browser load exactly the same file. The site reaches it from the classic
  * app.js with a dynamic import().
  */
 import createSSQR from './vendor/ssqr.js';
@@ -23,13 +23,13 @@ export function ready() {
   return modulePromise;
 }
 
-/** True once ready() has resolved — lets callers branch without awaiting. */
+/** True once ready() has resolved, so callers can branch without awaiting. */
 export function isReady() { return mod !== null; }
 
 /* ---------- UR decoder states (mirrors ur_decoder.h) ----------------------- */
 
 /* UR_DECODER_OK is 0. A `if (state)` test therefore reads "not finished" as
- * success and vice versa — compare against these names, never truthiness. */
+ * success and vice versa. Compare against these names, never truthiness. */
 export const UR_OK = 0;
 export const UR_PROCESSING = 1;
 export const UR_NO_RESULT = 2;
@@ -56,6 +56,22 @@ function withBytes(bytes, fn) {
   } finally { mod._free(ptr); }
 }
 
+/* Several byte arrays in one allocation; fn gets one pointer per array. */
+function withAllBytes(arrays, fn) {
+  const total = arrays.reduce((n, a) => n + a.length, 0);
+  const base = mod._malloc(Math.max(total, 1));
+  try {
+    const ptrs = [];
+    let offset = base;
+    for (const a of arrays) {
+      mod.HEAPU8.set(a, offset);
+      ptrs.push(offset);
+      offset += a.length;
+    }
+    return fn(...ptrs);
+  } finally { mod._free(base); }
+}
+
 /* ---------- UR encoding --------------------------------------------------- */
 
 /* A live ur:crypto-psbt fountain over one PSBT.
@@ -64,7 +80,7 @@ function withBytes(bytes, fn) {
  * distinct parts forever, so the animation never loops the way a pre-generated
  * frame list has to. Parts 1..seqLen are the pure message fragments; everything
  * after is a fresh XOR of a pseudorandom subset, with a sequence number that
- * keeps climbing — exactly what Sparrow puts on screen. */
+ * keeps climbing: exactly what Sparrow puts on screen. */
 export class UrPsbtEncoder {
   constructor(psbtBytes, maxFragmentLen, firstSeqNum = 0) {
     this.ptr = withBytes(psbtBytes, (ptr, len) =>
@@ -77,7 +93,7 @@ export class UrPsbtEncoder {
 
   /* The next UR part, UPPERCASE.
    *
-   * cUR upper-cases inside encode_uri() rather than leaving it to the caller —
+   * cUR upper-cases inside encode_uri() rather than leaving it to the caller:
    * the same transform Sparrow and SeedSigner apply just before QR encoding, to
    * reach the QR alphanumeric mode. Python's common/ur2 defers it to
    * common/qr.py instead, which is why the parity test compares
@@ -113,7 +129,7 @@ export class UrPsbtDecoder {
   get state() { return mod._ssqr_dec_state(this.ptr); }
   /** Total pure fragments this message was split into (0 until the first part). */
   get expected() { return mod._ssqr_dec_expected(this.ptr); }
-  /** Unique fragments recovered — including ones solved out of mixed frames. */
+  /** Unique fragments recovered, including ones solved out of mixed frames. */
   get received() { return mod._ssqr_dec_received(this.ptr); }
   /** Every part accepted, mixed ones included. */
   get processed() { return mod._ssqr_dec_processed(this.ptr); }
@@ -153,7 +169,7 @@ export function qrEncode(text) {
 /* Decode QR codes out of a grayscale frame.
  *
  * `gray` must be w*h bytes of luminance. The buffer is copied into k_quirc's
- * own image plane, which it then binarizes in place — so it cannot be a view
+ * own image plane, which it then binarizes in place, so it cannot be a view
  * the caller still needs.
  *
  * Returns the payloads it managed to decode. A frame yielding nothing is the
@@ -167,9 +183,38 @@ export function qrDecodeGray(gray, w, h, findInverted = false) {
   const out = [];
   for (let i = 0; i < count; i++) {
     const len = mod._ssqr_qrd_decode(i);
-    if (len <= 0) continue;                 // located but unreadable — half a frame
+    if (len <= 0) continue;                 // located but unreadable: half a frame
     const ptr = mod._ssqr_qrd_payload();
     out.push(mod.UTF8ToString(ptr, len));
   }
   return out;
+}
+
+/* ---------- signature verification (libsecp256k1) ------------------------ */
+
+/* Both return true or false for a signature that parses, and throw when the key
+ * or the signature cannot be parsed at all, so the caller can say which. */
+const SIG_BAD_PUBKEY = -1;
+const SIG_BAD_SIGNATURE = -2;
+
+function sigResult(rc) {
+  if (rc === SIG_BAD_PUBKEY) throw new Error('public key does not parse');
+  if (rc === SIG_BAD_SIGNATURE) throw new Error('signature is not valid DER');
+  return rc === 1;
+}
+
+/** ECDSA: `der` is the DER signature WITHOUT its trailing sighash byte. */
+export function ecdsaVerify(digest32, pubkey, der) {
+  if (digest32.length !== 32) throw new Error('digest must be 32 bytes');
+  return sigResult(withAllBytes([digest32, pubkey, der], (m, p, s) =>
+    mod._ssqr_ecdsa_verify(m, p, pubkey.length, s, der.length)));
+}
+
+/** BIP340 Schnorr: a 64-byte signature against a 32-byte x-only key. */
+export function schnorrVerify(digest32, xonly32, sig64) {
+  if (digest32.length !== 32 || xonly32.length !== 32 || sig64.length !== 64) {
+    throw new Error('Schnorr verify takes a 32-byte digest and key and a 64-byte signature');
+  }
+  return sigResult(withAllBytes([digest32, xonly32, sig64], (m, p, s) =>
+    mod._ssqr_schnorr_verify(m, p, s)));
 }

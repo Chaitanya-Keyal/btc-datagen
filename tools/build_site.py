@@ -19,7 +19,7 @@ tools/wasm/roundtrip_test.mjs is the gate that does it.
 Layout:
     site/dist/
       index.html app.js ssqr.js psbt.js scan.js styles.css  (copied from site/)
-      vendor/ssqr.{js,wasm} vendor/noble-secp256k1.js       (built / fetched)
+      vendor/ssqr.{js,wasm}                                 (built)
       data/index.json                     scenario + wallet + seed catalog
       data/scenario/<id>.json             base64 PSBT, detail, verification data
       data/qr/<id>.bbqr.<density>.json    BBQR frame matrices (lazy-loaded)
@@ -76,7 +76,7 @@ STATIC_DIRS = ["licenses", "vendor"]
 
 # The site cannot run without these; there is no pre-rendered fallback for the
 # animated transaction QRs any more.
-WASM_ARTIFACTS = ["vendor/ssqr.js", "vendor/ssqr.wasm", "vendor/noble-secp256k1.js"]
+WASM_ARTIFACTS = ["vendor/ssqr.js", "vendor/ssqr.wasm"]
 
 MIN_FRAGMENT_BYTES = 10          # Sparrow MIN_FRAGMENT_LENGTH
 DEFAULT_FPS = 5                  # Sparrow ANIMATION_PERIOD_MILLIS = 200ms
@@ -266,8 +266,8 @@ def reference_signatures(psbt, signers: list) -> list:
 def verification_data(psbt, signers: list, threshold: int) -> dict:
     """Everything the browser needs to check a signature the device hands back.
 
-    The browser does the elliptic-curve work (site/psbt.js, via
-    @noble/secp256k1) but NOT the sighash construction. That is deliberate:
+    The browser does the elliptic-curve work (site/psbt.js, via libsecp256k1
+    in the WASM module) but NOT the sighash construction. That is deliberate:
     computing a sighash means implementing BIP143, BIP341 and the legacy
     algorithm in JavaScript, three separate chances to be subtly wrong, in a
     place where being subtly wrong means confidently displaying a green tick.

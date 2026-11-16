@@ -46,12 +46,14 @@ common/
 generators/           standalone artifact generators (PNG/GIF into output/)
 site/                 the demo site's source
   index.html app.js styles.css seedsigner-logo.svg
-  ssqr.js             wrapper over the WASM module (UR codec, QR encode/decode)
+  ssqr.js             wrapper over the WASM module (UR codec, QR encode/decode,
+                      signature verification)
   psbt.js             minimal PSBT reader + signature verification
   scan.js             camera capture -> QR decode -> UR reassembly
-  vendor/             gitignored: built ssqr.{js,wasm} + @noble/secp256k1
+  vendor/             gitignored: built ssqr.{js,wasm}
 site/dist/            built site; gitignored, produced by tools/build_site.py
-deps/                 gitignored: cUR, k_quirc, qrcodegen at pinned commits
+deps/                 gitignored: cUR, k_quirc, qrcodegen, esp-secp256k1 at pinned
+                      commits
 tools/
   build_fixtures.py   (re)generate fixtures deterministically
   build_site.py       build the static site into site/dist/
@@ -194,9 +196,11 @@ the SeedSigner's screen, read the signed transaction back, and check it.
   browser reads the device's screen with the device's code.
 - **Reassembly** is cUR's fountain decoder, with a live per-fragment meter.
 - **Verification** parses the returned PSBT, asserts its unsigned transaction is
-  byte-identical to the one this page sent, and verifies every signature on the
-  secp256k1 curve (`@noble/secp256k1`) against a sighash digest computed at
-  build time by embit.
+  byte-identical to the one this page sent, and verifies every signature against
+  a sighash digest computed at build time by embit. The verifier is libsecp256k1
+  compiled into the same WASM module: the secp256k1-zkp commit that embit 0.8.0
+  and the ESP32 firmware build from, with the firmware's own build config. The
+  site runs no third-party JavaScript.
 - **The nonce check** compares every valid signature, byte for byte, with the
   one the build made by signing the same transaction with the same throwaway key
   (embit's `sign_with`, the same call SeedSigner makes).
@@ -400,7 +404,9 @@ MIT; see [LICENSE](LICENSE).
 
 The bundled **Permanent Marker** webfont (`site/permanent-marker.woff2`, by Font
 Diner) is Apache-2.0; its licence travels with it at
-`site/licenses/permanent-marker-LICENSE.txt`. The SeedSigner logo
+`site/licenses/permanent-marker-LICENSE.txt`. libsecp256k1 (ElementsProject's
+secp256k1-zkp, MIT), compiled into the WASM module to verify signatures, carries its
+license at `site/licenses/secp256k1-zkp-LICENSE.txt`. The SeedSigner logo
 (`site/seedsigner-logo.svg`) comes from the SeedSigner project. The vendored UR2 codec in `common/ur2/` is from the
 [SeedSigner](https://github.com/SeedSigner/seedsigner) project (also MIT); its
 original license is preserved at `common/ur2/LICENSE`.

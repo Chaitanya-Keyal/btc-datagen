@@ -1,6 +1,6 @@
-/* ssqr.c — the whole C surface the demo site talks to, in one WASM module.
+/* ssqr.c: the whole C surface the demo site talks to, in one WASM module.
  *
- * Four jobs, three upstream libraries:
+ * Five jobs, four upstream libraries:
  *
  *   UR encode   (cUR)       generate ur:crypto-psbt frames forever, the way a
  *                           real fountain encoder does, instead of replaying a
@@ -10,21 +10,26 @@
  *   QR encode   (qrcodegen) rasterize each generated frame at Sparrow's exact
  *                           zxing settings.
  *   QR decode   (k_quirc)   read the device's screen through the phone camera.
+ *   Verify      (libsecp256k1, secp256k1-zkp @ d9560e0)
+ *                           check each ECDSA and Schnorr signature the device
+ *                           hands back.
  *
  * Why these libraries and not JS equivalents: cUR is the codec the ESP32
  * firmware runs and k_quirc is the decoder it scans with, so the browser is
  * exercising the same code the hardware does rather than something merely
  * compatible. qrcodegen is here because it exposes the knobs Sparrow's zxing
  * call actually uses (fixed EC level with NO automatic boost, smallest fitting
- * version, automatic mask) — which is what makes byte-equality with the Python
+ * version, automatic mask), which is what makes byte-equality with the Python
  * `qrcode` output an assertable property rather than a hope. tools/verify.py
- * asserts exactly that.
+ * asserts exactly that. And a signature verifier belongs in libsecp256k1, the
+ * library Bitcoin Core verifies with, not in a JavaScript reimplementation of the
+ * curve; this is the commit both embit 0.8.0 and the ESP32 firmware build it from.
  *
  * Calling convention notes for the JS side (site/ssqr.js):
  *   - Anything that returns a buffer writes it to a module-level slot and
  *     returns its length; a companion _ptr() accessor gives the address. Out
  *     parameters through double pointers are miserable from ccall, and the
- *     alternative — malloc per call — leaks the moment an exception unwinds.
+ *     alternative (malloc per call) leaks the moment an exception unwinds.
  *   - Strings coming back from cUR ARE malloc'd by cUR and must be released
  *     with ssqr_free().
  */
@@ -37,12 +42,15 @@
 
 #include "k_quirc.h"
 #include "qrcodegen.h"
+#include "secp256k1.h"
+#include "secp256k1_extrakeys.h"
+#include "secp256k1_schnorrsig.h"
 #include "types/psbt.h"
 #include "ur_decoder.h"
 #include "ur_encoder.h"
 
 /* Sparrow's MIN_FRAGMENT_LENGTH. Mirrors MIN_FRAGMENT_BYTES in
- * tools/build_site.py — the two must agree or the browser and the build-time
+ * tools/build_site.py; the two must agree or the browser and the build-time
  * verifier partition the message differently. */
 #define SSQR_MIN_FRAGMENT_LEN 10
 
@@ -109,7 +117,7 @@ EMSCRIPTEN_KEEPALIVE
 ur_decoder_t *ssqr_dec_new(void) { return ur_decoder_new(); }
 
 /* Returns ur_decoder_state_t. NOTE for the JS side: UR_DECODER_OK == 0, so this
- * must never be read as a boolean — 0 means finished, not failed. */
+ * must never be read as a boolean: 0 means finished, not failed. */
 EMSCRIPTEN_KEEPALIVE
 int ssqr_dec_receive(ur_decoder_t *dec, const char *part) {
   return (int)ur_decoder_receive_part(dec, part);
@@ -125,7 +133,7 @@ int ssqr_dec_expected(ur_decoder_t *dec) {
   return dec ? (int)ur_decoder_expected_part_count(dec) : 0;
 }
 
-/* Unique pure fragments recovered — including ones solved out of mixed frames,
+/* Unique pure fragments recovered, including ones solved out of mixed frames,
  * which is why this can exceed the number of pure frames actually seen. */
 EMSCRIPTEN_KEEPALIVE
 int ssqr_dec_received(ur_decoder_t *dec) {
@@ -217,13 +225,13 @@ static int g_qr_version = 0;
  * rule-3 penalty scans a fixed 11-module window; qrcodegen scores with the real
  * format bits drawn and uses the run-based finder-pattern rule. Both are
  * legitimate readings of the penalty rules and they disagree on roughly 40% of
- * frames. The mask is invisible to a decoder — same data, same version, same EC
- * level, and every mask decodes identically — so the round-trip test verifies
+ * frames. The mask is invisible to a decoder (same data, same version, same EC
+ * level, and every mask decodes identically), so the round-trip test verifies
  * what actually matters (payload, version, EC level, mode) instead of byte
  * equality with a second encoder's arbitrary-but-valid pick.
  *
  * The caller upper-cases UR/BBQR payloads before getting here, mirroring
- * common/qr.py — it must NOT happen in here, because the same rasterizer also
+ * common/qr.py. It must NOT happen in here, because the same rasterizer also
  * has to handle case-sensitive payloads. */
 EMSCRIPTEN_KEEPALIVE
 int ssqr_qr_encode(const char *text) {
@@ -248,7 +256,7 @@ int ssqr_qr_encode(const char *text) {
   return size;
 }
 
-/* Packed row-major bits, 1 = dark, no quiet zone — the same layout
+/* Packed row-major bits, 1 = dark, no quiet zone: the same layout
  * common/qr.py `_pack` produces, so both ends of the verifier speak one format.
  */
 EMSCRIPTEN_KEEPALIVE
@@ -265,7 +273,7 @@ static k_quirc_result_t g_quirc_result;
 
 /* Hand back the decoder's own grayscale buffer for the caller to fill; returns
  * NULL if the context could not be sized. Resizing reallocates, so it is only
- * done when the dimensions actually change — a camera frame size is stable for
+ * done when the dimensions actually change. A camera frame size is stable for
  * the life of a stream, and reallocating per frame would churn the heap at
  * 30 fps. */
 EMSCRIPTEN_KEEPALIVE
@@ -303,7 +311,7 @@ int ssqr_qrd_end(int find_inverted) {
 
 /* Decode located code `index`. Returns its payload length, or the negated
  * k_quirc_error_t on failure (so -3 is K_QUIRC_ERROR_FORMAT_ECC). A located
- * code that fails to decode is completely normal — it is what a half-captured
+ * code that fails to decode is completely normal: it is what a half-captured
  * frame looks like. */
 EMSCRIPTEN_KEEPALIVE
 int ssqr_qrd_decode(int index) {
@@ -334,3 +342,48 @@ int ssqr_qrd_ecc_level(void) { return g_quirc_result.data.ecc_level; }
 
 EMSCRIPTEN_KEEPALIVE
 int ssqr_qrd_qr_version(void) { return g_quirc_result.data.version; }
+
+/* ---------- signature verification (libsecp256k1) ------------------------- */
+
+/* One verify-only context for the life of the page. Creating it builds the small
+ * ECMULT_WINDOW_SIZE 4 table; nothing here signs, so no signing context. */
+static secp256k1_context *g_secp = NULL;
+
+static const secp256k1_context *secp(void) {
+  if (!g_secp)
+    g_secp = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+  return g_secp;
+}
+
+/* Results for both verifiers: 1 valid, 0 a well-formed signature that does not
+ * verify, negative when an input cannot even be parsed. */
+#define SSQR_SIG_BAD_PUBKEY -1
+#define SSQR_SIG_BAD_SIGNATURE -2
+
+/* ECDSA over a 32-byte digest, the way embit checks one: the public key in SEC
+ * encoding, the signature in DER WITHOUT its trailing sighash byte. No
+ * normalization, so a high-S signature fails just as it fails Bitcoin's
+ * standardness rules; a SeedSigner always produces low S. */
+EMSCRIPTEN_KEEPALIVE
+int ssqr_ecdsa_verify(const uint8_t *msg32, const uint8_t *pub, int publen,
+                      const uint8_t *der, int derlen) {
+  secp256k1_pubkey pubkey;
+  secp256k1_ecdsa_signature sig;
+  if (!secp256k1_ec_pubkey_parse(secp(), &pubkey, pub, (size_t)publen))
+    return SSQR_SIG_BAD_PUBKEY;
+  if (!secp256k1_ecdsa_signature_parse_der(secp(), &sig, der, (size_t)derlen))
+    return SSQR_SIG_BAD_SIGNATURE;
+  return secp256k1_ecdsa_verify(secp(), &sig, msg32, &pubkey);
+}
+
+/* BIP340 Schnorr over a 32-byte digest: a 64-byte signature (any sighash byte
+ * already removed) against a 32-byte x-only key. For a taproot key-path spend
+ * that key is the TWEAKED output key, which is what the scenario data ships. */
+EMSCRIPTEN_KEEPALIVE
+int ssqr_schnorr_verify(const uint8_t *msg32, const uint8_t *xonly32,
+                        const uint8_t *sig64) {
+  secp256k1_xonly_pubkey pubkey;
+  if (!secp256k1_xonly_pubkey_parse(secp(), &pubkey, xonly32))
+    return SSQR_SIG_BAD_PUBKEY;
+  return secp256k1_schnorrsig_verify(secp(), sig64, msg32, &pubkey);
+}

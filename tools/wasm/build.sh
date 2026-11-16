@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build site/vendor/ssqr.{js,wasm} — the UR codec, QR encoder and QR decoder the
-# demo site runs in the browser.
+# Build site/vendor/ssqr.{js,wasm}: the UR codec, QR encoder, QR decoder, and
+# signature verifier the demo site runs in the browser.
 #
 # Docker-only, with a pinned emsdk image, following the pattern already proven
 # in seedsigner-lvgl-screens/tools/apps/web_runner/build.sh: no host Emscripten
@@ -38,7 +38,8 @@ types/byte_buffer.c types/cbor_data.c types/cbor_encoder.c types/cbor_decoder.c 
 types/registry.c types/bytes_type.c types/psbt.c types/bip39.c \
 types/keypath.c types/hd_key.c types/multi_key.c types/output.c"
 
-SRCS="tools/wasm/ssqr.c deps/qrcodegen/c/qrcodegen.c"
+SECP=deps/esp-secp256k1
+SRCS="tools/wasm/ssqr.c deps/qrcodegen/c/qrcodegen.c $SECP/secp256k1-zkp/src/secp256k1.c"
 for src in $CUR_SRCS; do SRCS="$SRCS deps/cUR/src/$src"; done
 for src in k_quirc.c k_quirc_version.c k_quirc_identify.c k_quirc_decode.c; do
   SRCS="$SRCS deps/k_quirc/src/$src"
@@ -48,19 +49,27 @@ done
 # host test build, which is the configuration its validation corpus was measured
 # against. A phone camera pointed at a backlit LCD is exactly the uneven-lighting
 # case adaptive thresholding exists for.
-DEFINES="-DUR_CRC32_SLICE_BY_8 -DK_QUIRC_ADAPTIVE_THRESHOLD -DK_QUIRC_BILINEAR_THRESHOLD"
+#
+# HAVE_CONFIG_H makes libsecp256k1 read esp-secp256k1's config/libsecp256k1-config.h
+# (field and scalar backends, enabled modules, and the static signing table in
+# generated/), the same single-file build the ESP32 firmware compiles. None of those
+# settings changes what a verification returns.
+DEFINES="-DUR_CRC32_SLICE_BY_8 -DK_QUIRC_ADAPTIVE_THRESHOLD -DK_QUIRC_BILINEAR_THRESHOLD \
+  -DHAVE_CONFIG_H=1"
 
 # No ESP-IDF stubs needed: everything platform-specific in k_quirc_internal.h is
 # behind `#ifdef ESP_PLATFORM`, and the else-branch is plain malloc + stdio.
-INCLUDES="-Ideps/cUR/src -Ideps/qrcodegen/c -Ideps/k_quirc/include -Ideps/k_quirc/src"
+INCLUDES="-Ideps/cUR/src -Ideps/qrcodegen/c -Ideps/k_quirc/include -Ideps/k_quirc/src \
+  -I$SECP/config -I$SECP/generated -I$SECP/secp256k1-zkp -I$SECP/secp256k1-zkp/src \
+  -I$SECP/secp256k1-zkp/include"
 
 # stringToNewUTF8 is needed because cUR takes `const char *`; HEAPU8 because both
 # the PSBT bytes and the camera's grayscale plane cross the boundary as raw
-# memory. FILESYSTEM=0 drops the whole JS FS shim — nothing here touches files.
+# memory. FILESYSTEM=0 drops the whole JS FS shim; nothing here touches files.
 # EXPORT_ES6 so one wrapper (site/ssqr.js) serves both consumers: the browser
 # reaches it from the classic app.js with a dynamic import(), and the parity test
 # imports it straight into node. A non-ES6 MODULARIZE build would have needed a
-# script tag in the browser and a createRequire() shim in node — two loaders for
+# script tag in the browser and a createRequire() shim in node: two loaders for
 # one module.
 LINK_FLAGS="-O3 \
   -sMODULARIZE=1 \
@@ -78,7 +87,7 @@ LINK_FLAGS="-O3 \
 # container a dangling link. Mount each such target at the same path the symlink
 # resolves to inside /src, so the container sees a real directory either way.
 EXTRA_MOUNTS=()
-for dep in cUR k_quirc qrcodegen; do
+for dep in cUR k_quirc qrcodegen esp-secp256k1; do
   link="$REPO_ROOT/deps/$dep"
   if [ -L "$link" ]; then
     EXTRA_MOUNTS+=(-v "$(readlink -f "$link")":"/src/deps/$dep":ro)
@@ -95,7 +104,7 @@ docker run --rm \
   -e EM_CACHE=/emcache \
   "$IMAGE" \
   emcc $SRCS $INCLUDES $DEFINES $LINK_FLAGS \
-    -Wall -Wextra -Wno-unused-parameter \
+    -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
     -o site/vendor/ssqr.js
 
 echo ""

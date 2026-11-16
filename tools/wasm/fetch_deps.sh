@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Fetch the third-party code the site is built from, at pinned versions:
-# three C libraries for the WASM module (into deps/, gitignored) and one
-# JavaScript library for signature verification (into site/vendor/).
+# Fetch the third-party code the site is built from, at pinned versions: four C
+# libraries for the WASM module, into deps/ (gitignored). The site runs no
+# third-party JavaScript.
 #
-# These are NOT git submodules on purpose. This repo is mirrored to four forges,
-# and submodules make every mirror carry a URL that has to resolve from wherever
-# the clone happened; a pinned manifest plus a fetch script keeps the mirrors
-# plain copies. The pin is the SHA below — moving it is a deliberate, reviewable
-# edit rather than a `git submodule update --remote` that quietly slides.
+# These are NOT git submodules of this repo on purpose. This repo is mirrored to
+# four forges, and submodules make every mirror carry a URL that has to resolve from
+# wherever the clone happened; a pinned manifest plus a fetch script keeps the
+# mirrors plain copies. The pin is the SHA below. Moving it is a deliberate,
+# reviewable edit rather than a `git submodule update --remote` that quietly slides.
+# (A fetched dependency may have submodules of its own; those come along at the
+# commits its pin records.)
 #
 # Local checkouts win when present, so you can iterate on cUR or k_quirc in
 # their own working tree and rebuild here without pushing anything:
@@ -31,18 +33,27 @@ CUR_REF="0ed276bc10b70556925bb42f85149d7c837a6c51"
 # device's decoder to read the device's screen means a frame the browser cannot
 # read is a frame the hardware would likely also struggle with.
 # Pinned to the tip of `seedsigner-dev`, the branch the SeedSigner firmware
-# tracks, rather than `main` — the point of using k_quirc here is that the
+# tracks, rather than `main`: the point of using k_quirc here is that the
 # browser reads the device's screen with the device's decoder, and a pin that
 # lags the firmware quietly gives that up.
 KQUIRC_URL="https://github.com/kdmukAI-bot/k_quirc.git"
 KQUIRC_REF="494dcc738c94533810eda2e436f832ffb72b8045"
 
 # Nayuki's QR encoder. Chosen because it exposes the exact knobs Sparrow's zxing
-# call uses — fixed EC level (no automatic boost), smallest fitting version,
-# automatic mask — which is what lets tools/verify.py assert byte-equality with
+# call uses (fixed EC level with no automatic boost, smallest fitting version,
+# automatic mask), which is what lets tools/verify.py assert byte-equality with
 # the Python `qrcode` output.
 QRCODEGEN_URL="https://github.com/nayuki/QR-Code-generator.git"
 QRCODEGEN_REF="2c9044de6b049ca25cb3cd1649ed7e27aa055138"
+
+# libsecp256k1, for verifying the signatures a SeedSigner hands back. This is the
+# component the ESP32 firmware compiles: ElementsProject/secp256k1-zkp at d9560e0
+# (a submodule here, and the same commit embit 0.8.0 builds the Pi's bundled
+# library from) plus a single-file build config and the precomputed signing table,
+# which a July 2021 commit does not ship. Signature checking belongs in the
+# library Bitcoin itself uses, not in a JavaScript reimplementation.
+SECP256K1_URL="https://github.com/kdmukAI-bot/esp-secp256k1.git"
+SECP256K1_REF="6eda9b6a8ddb2160731ebdec7800f5a488830873"
 
 # --- fetch ------------------------------------------------------------------
 
@@ -75,6 +86,9 @@ fetch() {
     git -C "$dir" fetch --quiet origin
     git -C "$dir" checkout --quiet --detach "$ref"
   fi
+  if [ -f "$dir/.gitmodules" ]; then
+    git -C "$dir" submodule --quiet update --init --recursive
+  fi
   echo "  $name  @ ${ref:0:12}"
 }
 
@@ -83,43 +97,9 @@ echo "==> Dependencies in $DEPS"
 link_local cUR       "${SSQR_CUR_DIR:-}"       || fetch cUR       "$CUR_URL"       "$CUR_REF"
 link_local k_quirc   "${SSQR_KQUIRC_DIR:-}"    || fetch k_quirc   "$KQUIRC_URL"    "$KQUIRC_REF"
 link_local qrcodegen "${SSQR_QRCODEGEN_DIR:-}" || fetch qrcodegen "$QRCODEGEN_URL" "$QRCODEGEN_REF"
+link_local esp-secp256k1 "${SSQR_SECP256K1_DIR:-}" \
+  || fetch esp-secp256k1 "$SECP256K1_URL" "$SECP256K1_REF"
 
-# --- @noble/secp256k1 -------------------------------------------------------
-# The only third-party JavaScript on the site, and the only one that runs on a
-# visitor's phone, so it is pinned by CONTENT HASH rather than by version: a
-# version tag is a name the registry controls, a sha256 is not. The build fails
-# closed if the bytes are not exactly what was reviewed.
-#
-# Used solely to verify signatures out of the PSBT the SeedSigner hands back.
-# Nothing here signs anything, and no secret ever enters the browser.
-#
-# One file, zero dependencies, MIT. Version 3 dropped DER signature support, so
-# site/psbt.js converts Bitcoin's DER sigs to the 64-byte compact form itself.
-NOBLE_VERSION="3.1.0"
-NOBLE_URL="https://registry.npmjs.org/@noble/secp256k1/-/secp256k1-${NOBLE_VERSION}.tgz"
-NOBLE_TGZ_SHA256="f5d5f57083b71143291b3bc9aa9ea48a03313337c93d41a31d70b90224b57f74"
-NOBLE_JS_SHA256="e0d1bad238ceef8d5451713daf6d5b256ce871d3200fe7ee79dbc01179ec806a"
-
-NOBLE_DEST="$REPO_ROOT/site/vendor/noble-secp256k1.js"
-NOBLE_LICENSE="$REPO_ROOT/site/licenses/noble-secp256k1-LICENSE.txt"
-
-if [ -f "$NOBLE_DEST" ] \
-   && [ "$(sha256sum "$NOBLE_DEST" | cut -d' ' -f1)" = "$NOBLE_JS_SHA256" ]; then
-  echo "  noble-secp256k1  @ ${NOBLE_VERSION} (already present)"
-else
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  curl -fsSL "$NOBLE_URL" -o "$tmp/noble.tgz"
-  actual="$(sha256sum "$tmp/noble.tgz" | cut -d' ' -f1)"
-  if [ "$actual" != "$NOBLE_TGZ_SHA256" ]; then
-    echo "ERROR: @noble/secp256k1 ${NOBLE_VERSION} tarball sha256 mismatch" >&2
-    echo "  expected $NOBLE_TGZ_SHA256" >&2
-    echo "  got      $actual" >&2
-    exit 1
-  fi
-  tar -xzf "$tmp/noble.tgz" -C "$tmp" package/index.js package/LICENSE
-  mkdir -p "$(dirname "$NOBLE_DEST")" "$(dirname "$NOBLE_LICENSE")"
-  cp "$tmp/package/index.js" "$NOBLE_DEST"
-  cp "$tmp/package/LICENSE" "$NOBLE_LICENSE"
-  echo "  noble-secp256k1  @ ${NOBLE_VERSION}"
-fi
+# Retired: @noble/secp256k1 used to be fetched into site/vendor/. Remove a stale
+# copy so a local build cannot keep serving it.
+rm -f "$REPO_ROOT/site/vendor/noble-secp256k1.js"
